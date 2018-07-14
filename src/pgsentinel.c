@@ -52,18 +52,20 @@ static volatile sig_atomic_t got_sighup = false;
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 
+
 /* Our hooks */
 static void ash_shmem_startup(void);
-static planner_hook_type                planner_hook_next = NULL;
-static PlannedStmt *ash_planner_hook(Query *parse,
-                int cursorOptions, ParamListInfo boundParams);
-static void ash_post_parse_analyze(ParseState *pstate, Query *query);
 static void ash_shmem_shutdown(int code, Datum arg);
+static void ash_post_parse_analyze(ParseState *pstate, Query *query);
 
 /* GUC variables */
 static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 char *pgsentinelDbName = "postgres";
+
+/* to create queryid in case of utility statements*/
+static uint32 ash_hash32_string(const char *str, int len);
+static uint64 ash_hash64_string(const char *str, int len);
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -147,6 +149,7 @@ static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* us
 /* get max procs */
 static int get_max_procs_count(void);
 
+/* The procEntry */
 static procEntry
 search_procentry(int pid)
 {
@@ -165,6 +168,19 @@ search_procentry(int pid)
                                         errmsg("backend with pid=%d not found", pid)));
 }
 
+/* to create queryid in case of utility statements*/
+static uint32
+ash_hash32_string(const char *str, int len)
+{
+        return hash_any((const unsigned char *) str, len);
+}
+
+static uint64
+ash_hash64_string(const char *str, int len)
+{
+        return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
+                                                                                        len, 0));
+}
 
 /*
  * Calculate max processes count.
@@ -184,53 +200,21 @@ get_max_procs_count(void)
         return count;
 }
 
-/*
- * planner_hook hook, save queryId for ash
- */
-static PlannedStmt *
-ash_planner_hook(Query *parse, int cursorOptions,
-                                  ParamListInfo boundParams)
-{
-
-        if (MyProc)
-        {
-        int i = MyProc - ProcGlobal->allProcs;
-#if PG_VERSION_NUM >= 110000
-                /*
-                 * since we depend on queryId we need to check that its size
-                 * is uint64 as we coded in ash
-                 */
-                StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
-                                "queryId size is not uint64");
-#else
-                StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
-                                "queryId size is not uint32");
-#endif
-		ProcEntryArray[i].queryid = parse->queryId;
-        }
-        /* Invoke original hook if needed */
-        if (planner_hook_next)
-                return planner_hook_next(parse, cursorOptions, boundParams);
-
-        return standard_planner(parse, cursorOptions, boundParams);
-}
-
-/*
- * Post-parse-analysis hook: save query and query length
- */
+/* save queryid and query text */
 static void
 ash_post_parse_analyze(ParseState *pstate, Query *query)
 {
-   if (prev_post_parse_analyze_hook)
-          prev_post_parse_analyze_hook(pstate, query);
+
+        if (prev_post_parse_analyze_hook)
+                prev_post_parse_analyze_hook(pstate, query);
 
         if (MyProc)
         {
         int i = MyProc - ProcGlobal->allProcs;
-	char *querytext = pstate->p_sourcetext;
-	int query_location = query->stmt_location;
-	int query_len = query->stmt_len;
-	int minlen;
+        char *querytext = pstate->p_sourcetext;
+        int query_location = query->stmt_location;
+        int query_len = query->stmt_len;
+        int minlen;
 
         if (query_location >= 0)
         {
@@ -249,7 +233,7 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
                 query_len = strlen(querytext);
         }
 
-	 /*
+         /*
          * Discard leading and trailing whitespace, too.  Use scanner_isspace()
          * not libc's isspace(), because we want to match the lexer's behavior.
          */
@@ -258,9 +242,22 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
         while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
                 query_len--;
 
-	minlen = Min(query_len,pgstat_track_activity_query_size-1);
-	memcpy(ProcEntryArray[i].query,querytext,minlen);
-	ProcEntryArray[i].qlen=minlen;
+        minlen = Min(query_len,pgstat_track_activity_query_size-1);
+        memcpy(ProcEntryArray[i].query,querytext,minlen);
+        ProcEntryArray[i].qlen=minlen;
+        /*
+         * For utility statements, we just hash the query string to get an ID.
+         */
+#if PG_VERSION_NUM >= 110000
+	if (query->queryId == UINT64CONST(0)) {
+                ProcEntryArray[i].queryid = ash_hash64_string(querytext, query_len);
+#else
+        if (query->queryId == 0) {
+                ProcEntryArray[i].queryid = ash_hash32_string(querytext, query_len);
+#endif
+        } else {
+        ProcEntryArray[i].queryid = query->queryId;
+        }
         }
 }
 
@@ -920,8 +917,6 @@ _PG_init(void)
          */
         ash_prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = ash_shmem_startup;
-        planner_hook_next               = planner_hook;
-        planner_hook                    = ash_planner_hook;
         prev_post_parse_analyze_hook = post_parse_analyze_hook;
         post_parse_analyze_hook = ash_post_parse_analyze;
 
@@ -1156,5 +1151,4 @@ _PG_fini(void)
         /* Uninstall hooks. */
         shmem_startup_hook = ash_prev_shmem_startup_hook;
 	post_parse_analyze_hook = prev_post_parse_analyze_hook;
-        planner_hook = planner_hook_next;
 }

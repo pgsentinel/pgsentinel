@@ -14,7 +14,7 @@ The module must be loaded by adding `pgsentinel` to
 `shared_preload_libraries` in postgresql.conf, means that a server restart
 is needed to add or remove the module.
 
-When `pgsentinel` is enabled, it collects the history of session activty:
+When `pgsentinel` is enabled, it collects the history of session activity:
 
  * It's implemented as in-memory ring buffer where
    samples are written with given (configurable)
@@ -62,7 +62,7 @@ As pgsentinel uses the `pg_stat_statements` extension (officially bundled with P
 restart the postgresql daemon and create the extension:
 
     $ git clone https://github.com/pgsentinel/pgsentinel.git
-    $ cd pgsentinel
+    $ cd pgsentinel/src
     $ make
     $ sudo make install
     $ psql DB -c "CREATE EXTENSION pgsentinel;"
