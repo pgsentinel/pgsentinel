@@ -62,7 +62,7 @@ As pgsentinel uses the `pg_stat_statements` extension (officially bundled with P
 restart the postgresql daemon and create the extension:
 
     $ git clone https://github.com/pgsentinel/pgsentinel.git
-    $ cd pgsentinel
+    $ cd pgsentinel/src
     $ make
     $ sudo make install
     $ psql DB -c "CREATE EXTENSION pgsentinel;"
