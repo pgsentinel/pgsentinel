@@ -51,12 +51,14 @@ static volatile sig_atomic_t got_sighup = false;
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
+static ExecutorEnd_hook_type    prev_ExecutorEnd = NULL;
 
 /* Our hooks */
 static void ash_shmem_startup(void);
 static planner_hook_type                planner_hook_next = NULL;
 static PlannedStmt *ash_planner_hook(Query *parse,
                 int cursorOptions, ParamListInfo boundParams);
+static void ash_ExecutorEnd(QueryDesc *queryDesc);
 static void ash_post_parse_analyze(ParseState *pstate, Query *query);
 static void ash_shmem_shutdown(int code, Datum arg);
 
@@ -206,7 +208,8 @@ ash_planner_hook(Query *parse, int cursorOptions,
                 StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
                                 "queryId size is not uint32");
 #endif
-		ProcEntryArray[i].queryid = parse->queryId;
+		if (!ProcEntryArray[i].queryid)
+		    ProcEntryArray[i].queryid = parse->queryId;
         }
         /* Invoke original hook if needed */
         if (planner_hook_next)
@@ -259,10 +262,29 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
                 query_len--;
 
 	minlen = Min(query_len,pgstat_track_activity_query_size-1);
-	memcpy(ProcEntryArray[i].query,querytext,minlen);
-	ProcEntryArray[i].qlen=minlen;
+	if (!ProcEntryArray[i].queryid) {
+		memcpy(ProcEntryArray[i].query,querytext,minlen);
+		ProcEntryArray[i].qlen=minlen;
+	}
         }
 }
+
+/*
+ * ExecutorEnd hook: clear queryId
+ */
+static void
+ash_ExecutorEnd(QueryDesc *queryDesc)
+{
+        if (MyProc) {
+              ProcEntryArray[MyProc - ProcGlobal->allProcs].queryid = UINT64CONST(0);
+	}
+
+        if (prev_ExecutorEnd)
+                prev_ExecutorEnd(queryDesc);
+        else
+                standard_ExecutorEnd(queryDesc);
+}
+
 
 /* Estimate amount of shared memory needed for ash entry*/
 static Size
@@ -924,6 +946,8 @@ _PG_init(void)
         planner_hook                    = ash_planner_hook;
         prev_post_parse_analyze_hook = post_parse_analyze_hook;
         post_parse_analyze_hook = ash_post_parse_analyze;
+	prev_ExecutorEnd                = ExecutorEnd_hook;
+        ExecutorEnd_hook                = ash_ExecutorEnd;
 
 	/* Worker parameter and registration */
         memset(&worker, 0, sizeof(worker));
