@@ -277,6 +277,7 @@ ash_ExecutorEnd(QueryDesc *queryDesc)
 {
         if (MyProc) {
               ProcEntryArray[MyProc - ProcGlobal->allProcs].queryid = UINT64CONST(0);
+              *ProcEntryArray[MyProc - ProcGlobal->allProcs].query = (char *) "\0";
 	}
 
         if (prev_ExecutorEnd)
