@@ -63,8 +63,8 @@ static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 char *pgsentinelDbName = "postgres";
 
+/* to create queryid in case of utility statements*/
 static uint32 ash_hash_string(const char *str, int len);
-
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -148,6 +148,7 @@ static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* us
 /* get max procs */
 static int get_max_procs_count(void);
 
+/* The procEntry */
 static procEntry
 search_procentry(int pid)
 {
@@ -166,6 +167,7 @@ search_procentry(int pid)
                                         errmsg("backend with pid=%d not found", pid)));
 }
 
+/* to create queryid in case of utility statements*/
 static uint32
 ash_hash_string(const char *str, int len)
 {
@@ -191,6 +193,7 @@ get_max_procs_count(void)
         return count;
 }
 
+/* save queryid and query text */
 static void
 ash_post_parse_analyze(ParseState *pstate, Query *query)
 {
@@ -905,7 +908,6 @@ _PG_init(void)
         shmem_startup_hook = ash_shmem_startup;
         prev_post_parse_analyze_hook = post_parse_analyze_hook;
         post_parse_analyze_hook = ash_post_parse_analyze;
-
 
 	/* Worker parameter and registration */
         memset(&worker, 0, sizeof(worker));
