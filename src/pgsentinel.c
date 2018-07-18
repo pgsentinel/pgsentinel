@@ -51,18 +51,20 @@ static volatile sig_atomic_t got_sighup = false;
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
-static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 
 
 /* Our hooks */
 static void ash_shmem_startup(void);
-static void ash_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void ash_shmem_shutdown(int code, Datum arg);
+static void ash_post_parse_analyze(ParseState *pstate, Query *query);
 
 /* GUC variables */
 static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 char *pgsentinelDbName = "postgres";
+
+static uint32 ash_hash_string(const char *str, int len);
+
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -164,6 +166,12 @@ search_procentry(int pid)
                                         errmsg("backend with pid=%d not found", pid)));
 }
 
+static uint32
+ash_hash_string(const char *str, int len)
+{
+        return hash_any((const unsigned char *) str, len);
+}
+
 
 /*
  * Calculate max processes count.
@@ -184,19 +192,18 @@ get_max_procs_count(void)
 }
 
 static void
-ash_ExecutorStart(QueryDesc *queryDesc, int eflags)
+ash_post_parse_analyze(ParseState *pstate, Query *query)
 {
-        if (prev_ExecutorStart)
-                prev_ExecutorStart(queryDesc, eflags);
-        else
-                standard_ExecutorStart(queryDesc, eflags);
+
+        if (prev_post_parse_analyze_hook)
+                prev_post_parse_analyze_hook(pstate, query);
 
         if (MyProc)
         {
         int i = MyProc - ProcGlobal->allProcs;
-        char *querytext = queryDesc->sourceText;
-        int query_location = queryDesc->plannedstmt->stmt_location;
-        int query_len = queryDesc->plannedstmt->stmt_len;
+        char *querytext = pstate->p_sourcetext;
+        int query_location = query->stmt_location;
+        int query_len = query->stmt_len;
         int minlen;
 
         if (query_location >= 0)
@@ -228,7 +235,15 @@ ash_ExecutorStart(QueryDesc *queryDesc, int eflags)
         minlen = Min(query_len,pgstat_track_activity_query_size-1);
         memcpy(ProcEntryArray[i].query,querytext,minlen);
         ProcEntryArray[i].qlen=minlen;
-        ProcEntryArray[i].queryid = queryDesc->plannedstmt->queryId;
+        /*
+         * For utility statements, we just hash the query string to get an ID.
+         */
+        if (query->queryId == 0) {
+                ProcEntryArray[i].queryid = ash_hash_string(querytext, query_len);
+        } else {
+
+        ProcEntryArray[i].queryid = query->queryId;
+        }
         }
 }
 
@@ -888,8 +903,9 @@ _PG_init(void)
          */
         ash_prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = ash_shmem_startup;
-	prev_ExecutorStart = ExecutorStart_hook;
-        ExecutorStart_hook = ash_ExecutorStart;
+        prev_post_parse_analyze_hook = post_parse_analyze_hook;
+        post_parse_analyze_hook = ash_post_parse_analyze;
+
 
 	/* Worker parameter and registration */
         memset(&worker, 0, sizeof(worker));
@@ -1121,5 +1137,5 @@ _PG_fini(void)
 {
         /* Uninstall hooks. */
         shmem_startup_hook = ash_prev_shmem_startup_hook;
-	ExecutorStart_hook = prev_ExecutorStart;
+	post_parse_analyze_hook = prev_post_parse_analyze_hook;
 }
