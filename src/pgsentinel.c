@@ -64,7 +64,8 @@ static int ash_max_entries = 1000;
 char *pgsentinelDbName = "postgres";
 
 /* to create queryid in case of utility statements*/
-static uint32 ash_hash_string(const char *str, int len);
+static uint32 ash_hash32_string(const char *str, int len);
+static uint64 ash_hash64_string(const char *str, int len);
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -169,11 +170,17 @@ search_procentry(int pid)
 
 /* to create queryid in case of utility statements*/
 static uint32
-ash_hash_string(const char *str, int len)
+ash_hash32_string(const char *str, int len)
 {
         return hash_any((const unsigned char *) str, len);
 }
 
+static uint64
+ash_hash64_string(const char *str, int len)
+{
+        return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
+                                                                                        len, 0));
+}
 
 /*
  * Calculate max processes count.
@@ -241,10 +248,14 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
         /*
          * For utility statements, we just hash the query string to get an ID.
          */
+#if PG_VERSION_NUM >= 110000
+	if (query->queryId == UINT64CONST(0)) {
+                ProcEntryArray[i].queryid = ash_hash64_string(querytext, query_len);
+#else
         if (query->queryId == 0) {
-                ProcEntryArray[i].queryid = ash_hash_string(querytext, query_len);
+                ProcEntryArray[i].queryid = ash_hash32_string(querytext, query_len);
+#endif
         } else {
-
         ProcEntryArray[i].queryid = query->queryId;
         }
         }
