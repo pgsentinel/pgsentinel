@@ -51,15 +51,12 @@ static volatile sig_atomic_t got_sighup = false;
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
-static ExecutorEnd_hook_type    prev_ExecutorEnd = NULL;
+static ExecutorStart_hook_type prev_ExecutorStart = NULL;
+
 
 /* Our hooks */
 static void ash_shmem_startup(void);
-static planner_hook_type                planner_hook_next = NULL;
-static PlannedStmt *ash_planner_hook(Query *parse,
-                int cursorOptions, ParamListInfo boundParams);
-static void ash_ExecutorEnd(QueryDesc *queryDesc);
-static void ash_post_parse_analyze(ParseState *pstate, Query *query);
+static void ash_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void ash_shmem_shutdown(int code, Datum arg);
 
 /* GUC variables */
@@ -186,54 +183,21 @@ get_max_procs_count(void)
         return count;
 }
 
-/*
- * planner_hook hook, save queryId for ash
- */
-static PlannedStmt *
-ash_planner_hook(Query *parse, int cursorOptions,
-                                  ParamListInfo boundParams)
-{
-
-        if (MyProc)
-        {
-        int i = MyProc - ProcGlobal->allProcs;
-#if PG_VERSION_NUM >= 110000
-                /*
-                 * since we depend on queryId we need to check that its size
-                 * is uint64 as we coded in ash
-                 */
-                StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
-                                "queryId size is not uint64");
-#else
-                StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
-                                "queryId size is not uint32");
-#endif
-		if (!ProcEntryArray[i].queryid)
-		    ProcEntryArray[i].queryid = parse->queryId;
-        }
-        /* Invoke original hook if needed */
-        if (planner_hook_next)
-                return planner_hook_next(parse, cursorOptions, boundParams);
-
-        return standard_planner(parse, cursorOptions, boundParams);
-}
-
-/*
- * Post-parse-analysis hook: save query and query length
- */
 static void
-ash_post_parse_analyze(ParseState *pstate, Query *query)
+ash_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-   if (prev_post_parse_analyze_hook)
-          prev_post_parse_analyze_hook(pstate, query);
+        if (prev_ExecutorStart)
+                prev_ExecutorStart(queryDesc, eflags);
+        else
+                standard_ExecutorStart(queryDesc, eflags);
 
         if (MyProc)
         {
         int i = MyProc - ProcGlobal->allProcs;
-	char *querytext = pstate->p_sourcetext;
-	int query_location = query->stmt_location;
-	int query_len = query->stmt_len;
-	int minlen;
+        char *querytext = queryDesc->sourceText;
+        int query_location = queryDesc->plannedstmt->stmt_location;
+        int query_len = queryDesc->plannedstmt->stmt_len;
+        int minlen;
 
         if (query_location >= 0)
         {
@@ -252,7 +216,7 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
                 query_len = strlen(querytext);
         }
 
-	 /*
+         /*
          * Discard leading and trailing whitespace, too.  Use scanner_isspace()
          * not libc's isspace(), because we want to match the lexer's behavior.
          */
@@ -261,31 +225,12 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
         while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
                 query_len--;
 
-	minlen = Min(query_len,pgstat_track_activity_query_size-1);
-	if (!ProcEntryArray[i].queryid) {
-		memcpy(ProcEntryArray[i].query,querytext,minlen);
-		ProcEntryArray[i].qlen=minlen;
-	}
+        minlen = Min(query_len,pgstat_track_activity_query_size-1);
+        memcpy(ProcEntryArray[i].query,querytext,minlen);
+        ProcEntryArray[i].qlen=minlen;
+        ProcEntryArray[i].queryid = queryDesc->plannedstmt->queryId;
         }
 }
-
-/*
- * ExecutorEnd hook: clear queryId
- */
-static void
-ash_ExecutorEnd(QueryDesc *queryDesc)
-{
-        if (MyProc) {
-              ProcEntryArray[MyProc - ProcGlobal->allProcs].queryid = UINT64CONST(0);
-              *ProcEntryArray[MyProc - ProcGlobal->allProcs].query = (char *) "\0";
-	}
-
-        if (prev_ExecutorEnd)
-                prev_ExecutorEnd(queryDesc);
-        else
-                standard_ExecutorEnd(queryDesc);
-}
-
 
 /* Estimate amount of shared memory needed for ash entry*/
 static Size
@@ -943,12 +888,8 @@ _PG_init(void)
          */
         ash_prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = ash_shmem_startup;
-        planner_hook_next               = planner_hook;
-        planner_hook                    = ash_planner_hook;
-        prev_post_parse_analyze_hook = post_parse_analyze_hook;
-        post_parse_analyze_hook = ash_post_parse_analyze;
-	prev_ExecutorEnd                = ExecutorEnd_hook;
-        ExecutorEnd_hook                = ash_ExecutorEnd;
+	prev_ExecutorStart = ExecutorStart_hook;
+        ExecutorStart_hook = ash_ExecutorStart;
 
 	/* Worker parameter and registration */
         memset(&worker, 0, sizeof(worker));
@@ -1180,6 +1121,5 @@ _PG_fini(void)
 {
         /* Uninstall hooks. */
         shmem_startup_hook = ash_prev_shmem_startup_hook;
-	post_parse_analyze_hook = prev_post_parse_analyze_hook;
-        planner_hook = planner_hook_next;
+	ExecutorStart_hook = prev_ExecutorStart;
 }
