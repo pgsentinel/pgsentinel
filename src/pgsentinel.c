@@ -117,7 +117,6 @@ typedef struct procEntry
 	int qlen;
 } procEntry;
 
-
 /* For shared memory */
 static char *AshEntryUsenameBuffer = NULL;
 static char *AshEntryDatnameBuffer = NULL;
