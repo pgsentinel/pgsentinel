@@ -87,8 +87,8 @@ typedef struct ashEntry
         int pid;
         uint64 queryid;
         TimestampTz ash_time;
-	Oid *datid;
-	Oid *usesysid;
+	Oid datid;
+	Oid usesysid;
 	int client_port;
 	char *usename;	
 	char *datname;	
@@ -101,8 +101,8 @@ typedef struct ashEntry
 	char *query;	
 	char *backend_type;	
 	char *client_addr;	
-	TransactionId *backend_xmin;
-	TransactionId *backend_xid;
+	TransactionId backend_xmin;
+	TransactionId backend_xid;
         TimestampTz backend_start;
         TimestampTz xact_start;
         TimestampTz query_start;
@@ -143,13 +143,13 @@ static Size proc_entry_memsize(void);
 static procEntry search_procentry(int backendPid);
 
 /* store ash entry */
-static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid);
+static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid);
 
 /* to rotate the ash entries */
 static int inserted=0;
 
 /* prepare store ash */
-static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid);
+static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid);
 
 /* get max procs */
 static int get_max_procs_count(void);
@@ -607,7 +607,7 @@ pgsentinel_sighup(SIGNAL_ARGS)
 }
 
 static void
-ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid)
+ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
 		procEntry newprocentry;
 		int len;
@@ -641,7 +641,7 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 }
 
 static void 
-ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr,TransactionId *backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid)
+ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
         Assert(pid != NULL);
 
@@ -739,12 +739,12 @@ pgsentinel_main(Datum main_arg)
 			char *backend_typevalue=NULL;
 			char *statevalue=NULL;
 			char *clientaddrvalue=NULL;
-			int *pidvalue = NULL;
+			int pidvalue;
 			int client_portvalue;
 			Oid datidvalue;
 			Oid usesysidvalue;
-			TransactionId *backend_xminvalue = NULL;
-			TransactionId *backend_xidvalue = NULL;
+			TransactionId backend_xminvalue;
+			TransactionId backend_xidvalue;
 			TimestampTz backend_startvalue;
 			TimestampTz xact_startvalue;
 			TimestampTz query_startvalue;
@@ -957,6 +957,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
         Tuplestorestate *tupstore;
         MemoryContext per_query_ctx;
         MemoryContext oldcontext;
+	int i;
 
         /* Entry array must exist already */
         if (!AshEntryArray)
@@ -990,7 +991,6 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
         MemoryContextSwitchTo(oldcontext);
 
-	int i =0;
 	for (i = 0; i < ash_max_entries; i++)
         {
                 Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
