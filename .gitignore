@@ -1,0 +1,17 @@
+.classpath
+.settings
+.project
+.DS_Store
+.externalToolBuilders
+build
+.*.swp
+nbproject
+.idea
+*.iml
+*.ipr
+*.iws
+*.local.properties
+target/
+/eclipsebin/
+*.o
+
