@@ -1,7 +1,7 @@
 `pgsentinel` – sampling active session history
 =============================================================
 
-[![Build Status](https://travis-ci.org/vlsi/pgsentinel.svg?branch=master)](https://travis-ci.org/vlsi/pgsentinel)
+[![Build Status](https://travis-ci.org/pgsentinel/pgsentinel.svg?branch=master)](https://travis-ci.org/pgsentinel/pgsentinel)
 
 Introduction
 ------------
