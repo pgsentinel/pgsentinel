@@ -1,0 +1,44 @@
+sudo: false
+language: c
+
+before_install:
+  - eval "${MATRIX_EVAL}"
+
+before_script:
+  - export PG_DATADIR="/etc/postgresql/${PG_VERSION}/main"
+  - .travis/install_postgresql.sh
+  - .travis/install_pgsentinel.sh
+  - .travis/configure_postgresql.sh
+  - .travis/start_postgresql.sh
+  - test "x$PG_VERSION" != 'xHEAD' || psql -U postgres -c "set password_encryption='scram-sha-256'; create user test with password 'test';"
+  - test "x$PG_VERSION" = 'xHEAD' || psql -U postgres -c "create user test with password 'test';"
+  - psql -U postgres -c "CREATE EXTENSION pgsentinel;"
+  - psql -c 'create database test owner test;' -U postgres
+
+script:
+  - true
+
+after_failure:
+  - .travis/cat_logs.sh
+
+matrix:
+  include:
+    - env:
+        - PG_VERSION=HEAD
+      sudo: required
+    - env:
+        - PG_VERSION=HEAD
+        - MATRIX_EVAL="CC=clang-5.0 && CXX=clang++-5.0"
+      sudo: required
+      addons:
+        apt:
+          sources:
+          - llvm-toolchain-trusty-5.0
+          packages:
+          - clang-5.0
+    - env:
+        - PG_VERSION=10
+      sudo: required
+
+# skip install script
+install: true
