@@ -76,11 +76,8 @@ static uint32 ash_hash32_string(const char *str, int len);
 static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
-static const char * const pg_stat_activity_query_good=
-"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity where state='active' and pid != pg_backend_pid()";
-
 static const char * const pg_stat_activity_query=
-"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity";
+"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity where state='active' and pid != pg_backend_pid()";
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 
@@ -90,8 +87,8 @@ typedef struct ashEntry
         int pid;
         uint64 queryid;
         TimestampTz ash_time;
-	Oid *datid;
-	Oid *usesysid;
+	Oid datid;
+	Oid usesysid;
 	int client_port;
 	char *usename;	
 	char *datname;	
@@ -104,8 +101,8 @@ typedef struct ashEntry
 	char *query;	
 	char *backend_type;	
 	char *client_addr;	
-	TransactionId *backend_xmin;
-	TransactionId *backend_xid;
+	TransactionId backend_xmin;
+	TransactionId backend_xid;
         TimestampTz backend_start;
         TimestampTz xact_start;
         TimestampTz query_start;
@@ -146,13 +143,13 @@ static Size proc_entry_memsize(void);
 static procEntry search_procentry(int backendPid);
 
 /* store ash entry */
-static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid);
+static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid);
 
 /* to rotate the ash entries */
 static int inserted=0;
 
 /* prepare store ash */
-static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid);
+static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid);
 
 /* get max procs */
 static int get_max_procs_count(void);
@@ -610,7 +607,7 @@ pgsentinel_sighup(SIGNAL_ARGS)
 }
 
 static void
-ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr, TransactionId *backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid)
+ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
 		procEntry newprocentry;
 		int len;
@@ -644,7 +641,7 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 }
 
 static void 
-ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid *datid, const char *datname, const char *application_name, const char *client_addr,TransactionId *backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid *usesysid, TransactionId *backend_xid)
+ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
         Assert(pid != NULL);
 
@@ -677,6 +674,7 @@ pgsentinel_main(Datum main_arg)
 	{
 
 		int rc, ret, i;
+		MemoryContext uppercxt;
 
 		/* Wait necessary amount of time */
 #if PG_VERSION_NUM >= 100000
@@ -707,7 +705,7 @@ pgsentinel_main(Datum main_arg)
 			proc_exit(0);
 		}
 
-		MemoryContext uppercxt = CurrentMemoryContext;
+		uppercxt = CurrentMemoryContext;
 
         	SetCurrentStatementStartTimestamp();
         	StartTransactionCommand();
@@ -741,30 +739,24 @@ pgsentinel_main(Datum main_arg)
 			char *backend_typevalue=NULL;
 			char *statevalue=NULL;
 			char *clientaddrvalue=NULL;
-			int *pidvalue = NULL;
+			int pidvalue;
 			int client_portvalue;
-			Oid *datidvalue = NULL;
-			Oid *usesysidvalue = NULL;
-			TransactionId *backend_xminvalue = NULL;
-			TransactionId *backend_xidvalue = NULL;
-			TimestampTz backend_startvalue = NULL;
-			TimestampTz xact_startvalue = NULL;
-			TimestampTz query_startvalue = NULL;
-			TimestampTz state_changevalue = NULL;
+			Oid datidvalue;
+			Oid usesysidvalue;
+			TransactionId backend_xminvalue;
+			TransactionId backend_xidvalue;
+			TimestampTz backend_startvalue;
+			TimestampTz xact_startvalue;
+			TimestampTz query_startvalue;
+			TimestampTz state_changevalue;
 
 			/* Fetch values */
 
 			/* datid */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull);
-			if (!isnull) {
-                        datidvalue = DatumGetObjectId(data);
-                        }
-
+                        datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
+			
 			/* usesysid */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull);
-			if (!isnull) {
-                        usesysidvalue = DatumGetObjectId(data);
-                        }
+                        usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
 
 			/* datname */
 			datnamevalue = DatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
@@ -965,6 +957,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
         Tuplestorestate *tupstore;
         MemoryContext per_query_ctx;
         MemoryContext oldcontext;
+	int i;
 
         /* Entry array must exist already */
         if (!AshEntryArray)
@@ -998,7 +991,6 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
         MemoryContextSwitchTo(oldcontext);
 
-	int i =0;
 	for (i = 0; i < ash_max_entries; i++)
         {
                 Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
