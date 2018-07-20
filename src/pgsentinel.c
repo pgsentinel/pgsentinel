@@ -10,7 +10,6 @@
  * LICENSE: GNU Affero General Public License v3.0
  */
 
-
 #include "postgres.h"
 #include "fmgr.h"
 #include "access/xact.h"
@@ -35,6 +34,7 @@
 #include "access/twophase.h"
 #include "parser/analyze.h"
 #include "parser/scansup.h"
+#include "access/hash.h"
 
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
@@ -65,8 +65,11 @@ static int ash_max_entries = 1000;
 char *pgsentinelDbName = "postgres";
 
 /* to create queryid in case of utility statements*/
-static uint32 ash_hash32_string(const char *str, int len);
+#if PG_VERSION_NUM >= 110000
 static uint64 ash_hash64_string(const char *str, int len);
+#else
+static uint32 ash_hash32_string(const char *str, int len);
+#endif
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -81,7 +84,7 @@ static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 typedef struct ashEntry
 {
         int pid;
-        uint64 *queryid;
+        uint64 queryid;
         TimestampTz ash_time;
 	Oid *datid;
 	Oid *usesysid;
@@ -108,9 +111,9 @@ typedef struct ashEntry
 /* Proc entry */
 typedef struct procEntry
 {
-        uint64 *queryid;
+        uint64 queryid;
 	char *query;
-	int *qlen;
+	int qlen;
 } procEntry;
 
 
@@ -170,18 +173,20 @@ search_procentry(int pid)
 }
 
 /* to create queryid in case of utility statements*/
-static uint32
-ash_hash32_string(const char *str, int len)
-{
-        return hash_any((const unsigned char *) str, len);
-}
-
+#if PG_VERSION_NUM >= 110000
 static uint64
 ash_hash64_string(const char *str, int len)
 {
         return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
                                                                                         len, 0));
 }
+#else
+static uint32
+ash_hash32_string(const char *str, int len)
+{
+        return hash_any((const unsigned char *) str, len);
+}
+#endif
 
 /*
  * Calculate max processes count.
@@ -212,7 +217,7 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
         if (MyProc)
         {
         int i = MyProc - ProcGlobal->allProcs;
-        char *querytext = pstate->p_sourcetext;
+        const char *querytext = pstate->p_sourcetext;
         int query_location = query->stmt_location;
         int query_len = query->stmt_len;
         int minlen;
