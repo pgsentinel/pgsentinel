@@ -76,11 +76,8 @@ static uint32 ash_hash32_string(const char *str, int len);
 static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
-static const char * const pg_stat_activity_query_good=
-"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity where state='active' and pid != pg_backend_pid()";
-
 static const char * const pg_stat_activity_query=
-"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity";
+"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type from pg_stat_activity where state='active' and pid != pg_backend_pid()";
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 
@@ -677,6 +674,7 @@ pgsentinel_main(Datum main_arg)
 	{
 
 		int rc, ret, i;
+		MemoryContext uppercxt;
 
 		/* Wait necessary amount of time */
 #if PG_VERSION_NUM >= 100000
@@ -707,7 +705,7 @@ pgsentinel_main(Datum main_arg)
 			proc_exit(0);
 		}
 
-		MemoryContext uppercxt = CurrentMemoryContext;
+		uppercxt = CurrentMemoryContext;
 
         	SetCurrentStatementStartTimestamp();
         	StartTransactionCommand();
@@ -743,28 +741,22 @@ pgsentinel_main(Datum main_arg)
 			char *clientaddrvalue=NULL;
 			int *pidvalue = NULL;
 			int client_portvalue;
-			Oid *datidvalue = NULL;
-			Oid *usesysidvalue = NULL;
+			Oid datidvalue;
+			Oid usesysidvalue;
 			TransactionId *backend_xminvalue = NULL;
 			TransactionId *backend_xidvalue = NULL;
-			TimestampTz backend_startvalue = NULL;
-			TimestampTz xact_startvalue = NULL;
-			TimestampTz query_startvalue = NULL;
-			TimestampTz state_changevalue = NULL;
+			TimestampTz backend_startvalue;
+			TimestampTz xact_startvalue;
+			TimestampTz query_startvalue;
+			TimestampTz state_changevalue;
 
 			/* Fetch values */
 
 			/* datid */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull);
-			if (!isnull) {
-                        datidvalue = DatumGetObjectId(data);
-                        }
-
+                        datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
+			
 			/* usesysid */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull);
-			if (!isnull) {
-                        usesysidvalue = DatumGetObjectId(data);
-                        }
+                        usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
 
 			/* datname */
 			datnamevalue = DatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
