@@ -21,6 +21,8 @@ CREATE FUNCTION pg_active_session_history(
     OUT state text,
     OUT backend_xid xid,
     OUT backend_xmin xid,
+    OUT blockers integer,
+    OUT blockerpid integer,
     OUT top_level_query text,
     OUT query text,
     OUT cmdtype text,

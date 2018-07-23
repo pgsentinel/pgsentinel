@@ -137,11 +137,8 @@ your bug report.
 If you're lacking of some functionality in `pgsentinel`  
 then you're welcome to make pull requests.
 
-Authors
+Author
 -------
  
- * Christophe Reveillere <c.reveillere@gmail.com>, 
-   Paris, France [!['test'](https://www.pgsentinel.com/images/twitter.png)](https://twitter.com/ckikof) [!['test'](https://www.pgsentinel.com/images/linkedin.png)](https://www.linkedin.com/in/christophereveillere/)
  * Bertrand Drouvot <bdrouvot@gmail.com>,
    Metz, France [!['test'](https://www.pgsentinel.com/images/twitter.png)](https://twitter.com/BertrandDrouvot) [!['test'](https://www.pgsentinel.com/images/linkedin.png)](https://www.linkedin.com/in/bdrouvot/)
-
