@@ -117,6 +117,14 @@ The worker is controlled by the following GUCs:.
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
 
 
+See how to query the view in this short video
+-------------
+[![Alt text](https://www.pgsentinel.com/images/pgSentinel.png)](https://vimeo.com/278781365)
+
+
+### The videos are available on [vimeo](https://vimeo.com/user87030260) 
+
+
 Contribution
 ------------
 
@@ -129,9 +137,9 @@ then you're welcome to make pull requests.
 
 Authors
 -------
-
- * Christophe Reveillere <c.reveillere@gmail.com>,
-   Paris, France
+ 
+ * Christophe Reveillere <c.reveillere@gmail.com>, 
+   Paris, France [!['test'](https://www.pgsentinel.com/images/twitter.png)](https://twitter.com/ckikof) [!['test'](https://www.pgsentinel.com/images/linkedin.png)](https://www.linkedin.com/in/christophereveillere/)
  * Bertrand Drouvot <bdrouvot@gmail.com>,
-   Metz, France
+   Metz, France [!['test'](https://www.pgsentinel.com/images/twitter.png)](https://twitter.com/BertrandDrouvot) [!['test'](https://www.pgsentinel.com/images/linkedin.png)](https://www.linkedin.com/in/bdrouvot/)
 
