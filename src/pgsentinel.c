@@ -39,7 +39,7 @@
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        23 
+#define PG_ACTIVE_SESSION_HISTORY_COLS        23
 
 /* Entry point of library loading */
 void _PG_init(void);
@@ -90,17 +90,17 @@ typedef struct ashEntry
 	Oid datid;
 	Oid usesysid;
 	int client_port;
-	char *usename;	
-	char *datname;	
-	char *application_name;	
-	char *wait_event_type;	
-	char *wait_event;	
-	char *state;	
-	char *client_hostname;	
-	char *top_level_query;	
-	char *query;	
-	char *backend_type;	
-	char *client_addr;	
+	char *usename;
+	char *datname;
+	char *application_name;
+	char *wait_event_type;
+	char *wait_event;
+	char *state;
+	char *client_hostname;
+	char *top_level_query;
+	char *query;
+	char *backend_type;
+	char *client_addr;
 	TransactionId backend_xmin;
 	TransactionId backend_xid;
         TimestampTz backend_start;
@@ -323,11 +323,11 @@ ash_shmem_startup(void)
 	char   *buffer;
 	int    i;
 
-	if (ash_prev_shmem_startup_hook) 
+	if (ash_prev_shmem_startup_hook)
             	ash_prev_shmem_startup_hook();
 
-	size = mul_size(sizeof(ashEntry), ash_max_entries);	
-	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size, &found);	
+	size = mul_size(sizeof(ashEntry), ash_max_entries);
+	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size, &found);
 
 	if (!found)
         {
@@ -639,7 +639,7 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 		AshEntryArray[inserted].ash_time=ash_time;
 }
 
-static void 
+static void
 ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
         Assert(pid != NULL);
@@ -753,7 +753,7 @@ pgsentinel_main(Datum main_arg)
 
 			/* datid */
                         datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
-			
+
 			/* usesysid */
                         usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
 
@@ -905,7 +905,7 @@ _PG_init(void)
 
         if (!process_shared_preload_libraries_in_progress)
                 return;
-	
+
         EmitWarningsOnPlaceholders("Ash Entry Array");
         RequestAddinShmemSpace(ash_entry_memsize());
         RequestNamedLWLockTranche("Ash Entry Array", 1);
@@ -1023,7 +1023,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// usesysid 
+		// usesysid
 		if (ObjectIdGetDatum(AshEntryArray[i].usesysid))
 			values[j++] = ObjectIdGetDatum(AshEntryArray[i].usesysid);
 		else
@@ -1040,7 +1040,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
                         values[j++] = CStringGetTextDatum(AshEntryArray[i].application_name);
                 else
                         nulls[j++] = true;
-		
+
 		// client_addr
                 if (AshEntryArray[i].client_addr[0] != '\0')
                         values[j++] = CStringGetTextDatum(AshEntryArray[i].client_addr);
