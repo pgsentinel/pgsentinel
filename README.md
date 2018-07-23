@@ -115,8 +115,10 @@ The worker is controlled by the following GUCs:.
 | pgsentinel_ash.sampling_period     | int4      | Period for history sampling in seconds |            1 | 1 |
 | pgsentinel_ash.max_entries     | int4      | Size of history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
+
+
 See how to query the view in this short video
------------
+-------------
 [![Alt text](https://www.pgsentinel.com/images/pgSentinel.png)](https://vimeo.com/278781365)
 
 
