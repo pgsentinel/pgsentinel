@@ -39,7 +39,7 @@
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        23
+#define PG_ACTIVE_SESSION_HISTORY_COLS        24
 
 /* Entry point of library loading */
 void _PG_init(void);
@@ -84,9 +84,9 @@ static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 /* ash entry */
 typedef struct ashEntry
 {
-        int pid;
-        uint64 queryid;
-        TimestampTz ash_time;
+	int pid;
+	uint64 queryid;
+	TimestampTz ash_time;
 	Oid datid;
 	Oid usesysid;
 	int client_port;
@@ -99,21 +99,23 @@ typedef struct ashEntry
 	char *client_hostname;
 	char *top_level_query;
 	char *query;
+	char *cmdtype;
 	char *backend_type;
 	char *client_addr;
 	TransactionId backend_xmin;
 	TransactionId backend_xid;
-        TimestampTz backend_start;
-        TimestampTz xact_start;
-        TimestampTz query_start;
-        TimestampTz state_change;
+	TimestampTz backend_start;
+	TimestampTz xact_start;
+	TimestampTz query_start;
+	TimestampTz state_change;
 } ashEntry;
 
 /* Proc entry */
 typedef struct procEntry
 {
-        uint64 queryid;
+	uint64 queryid;
 	char *query;
+	char *cmdtype;
 	int qlen;
 } procEntry;
 
@@ -126,12 +128,14 @@ static char *AshEntryWaitEventBuffer = NULL;
 static char *AshEntryClientHostnameBuffer = NULL;
 static char *AshEntryTopLevelQueryBuffer = NULL;
 static char *AshEntryQueryBuffer = NULL;
+static char *AshEntryCmdTypeBuffer = NULL;
 static char *AshEntryBackendTypeBuffer = NULL;
 static char *AshEntryStateBuffer = NULL;
 static char *AshEntryClientaddrBuffer = NULL;
 static ashEntry *AshEntryArray = NULL;
 static procEntry *ProcEntryArray = NULL;
 static char *ProcQueryBuffer = NULL;
+static char *ProcCmdTypeBuffer = NULL;
 
 
 /* Estimate amount of shared memory needed */
@@ -157,19 +161,19 @@ static int get_max_procs_count(void);
 static procEntry
 search_procentry(int pid)
 {
-        int i;
+	int i;
 
-        for (i = 0; i < ProcGlobal->allProcCount; i++)
-        {
-                PGPROC  *proc = &ProcGlobal->allProcs[i];
-                if (proc != NULL && proc->pid != 0 && proc->pid == pid)
-                {
-                        return ProcEntryArray[i];
-                }
-        }
+	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		PGPROC  *proc = &ProcGlobal->allProcs[i];
+		if (proc != NULL && proc->pid != 0 && proc->pid == pid)
+		{
+			return ProcEntryArray[i];
+		}
+	}
 
-        ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-                                        errmsg("backend with pid=%d not found", pid)));
+	ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+		errmsg("backend with pid=%d not found", pid)));
 }
 
 /* to create queryid in case of utility statements*/
@@ -177,14 +181,14 @@ search_procentry(int pid)
 static uint64
 ash_hash64_string(const char *str, int len)
 {
-        return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
-                                                                                        len, 0));
+	return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
+		len, 0));
 }
 #else
 static uint32
 ash_hash32_string(const char *str, int len)
 {
-        return hash_any((const unsigned char *) str, len);
+	return hash_any((const unsigned char *) str, len);
 }
 #endif
 
@@ -194,16 +198,16 @@ ash_hash32_string(const char *str, int len)
 static int
 get_max_procs_count(void)
 {
-        int count = 0;
+	int count = 0;
 
-        /* MyProcs, including autovacuum workers and launcher */
-        count += MaxBackends;
-        /* AuxiliaryProcs */
-        count += NUM_AUXILIARY_PROCS;
-        /* Prepared xacts */
-        count += max_prepared_xacts;
+	/* MyProcs, including autovacuum workers and launcher */
+	count += MaxBackends;
+	/* AuxiliaryProcs */
+	count += NUM_AUXILIARY_PROCS;
+	/* Prepared xacts */
+	count += max_prepared_xacts;
 
-        return count;
+	return count;
 }
 
 /* save queryid and query text */
@@ -211,92 +215,118 @@ static void
 ash_post_parse_analyze(ParseState *pstate, Query *query)
 {
 
-        if (prev_post_parse_analyze_hook)
-                prev_post_parse_analyze_hook(pstate, query);
+	if (prev_post_parse_analyze_hook)
+		prev_post_parse_analyze_hook(pstate, query);
 
-        if (MyProc)
-        {
-        int i = MyProc - ProcGlobal->allProcs;
-        const char *querytext = pstate->p_sourcetext;
-        int query_location = query->stmt_location;
-        int query_len = query->stmt_len;
-        int minlen;
+	if (MyProc)
+	{
+		int i = MyProc - ProcGlobal->allProcs;
+		const char *querytext = pstate->p_sourcetext;
+		int query_location = query->stmt_location;
+		int query_len = query->stmt_len;
+		int minlen;
 
-        if (query_location >= 0)
-        {
-                Assert(query_location <= strlen(querytext));
-                querytext += query_location;
-                /* Length of 0 (or -1) means "rest of string" */
-                if (query_len <= 0)
-                        query_len = strlen(querytext);
-                else
-                        Assert(query_len <= strlen(querytext));
-        }
-        else
-        {
-                /* If query location is unknown, distrust query_len as well */
-                query_location = 0;
-                query_len = strlen(querytext);
-        }
+		if (query_location >= 0)
+		{
+			Assert(query_location <= strlen(querytext));
+			querytext += query_location;
+			/* Length of 0 (or -1) means "rest of string" */
+			if (query_len <= 0)
+				query_len = strlen(querytext);
+			else
+				Assert(query_len <= strlen(querytext));
+		}
+		else
+		{
+			/* If query location is unknown, distrust query_len as well */
+			query_location = 0;
+			query_len = strlen(querytext);
+		}
 
-         /*
-         * Discard leading and trailing whitespace, too.  Use scanner_isspace()
-         * not libc's isspace(), because we want to match the lexer's behavior.
-         */
-        while (query_len > 0 && scanner_isspace(querytext[0]))
-                querytext++, query_location++, query_len--;
-        while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
-                query_len--;
+		/*
+		 * Discard leading and trailing whitespace, too.  Use scanner_isspace()
+		 * not libc's isspace(), because we want to match the lexer's behavior.
+		 */
+		while (query_len > 0 && scanner_isspace(querytext[0]))
+			querytext++, query_location++, query_len--;
+		while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
+			query_len--;
 
-        minlen = Min(query_len,pgstat_track_activity_query_size-1);
-        memcpy(ProcEntryArray[i].query,querytext,minlen);
-        ProcEntryArray[i].qlen=minlen;
-        /*
-         * For utility statements, we just hash the query string to get an ID.
-         */
+		minlen = Min(query_len,pgstat_track_activity_query_size-1);
+		memcpy(ProcEntryArray[i].query,querytext,minlen);
+		ProcEntryArray[i].qlen=minlen;
+		switch (query->commandType)
+		{
+                case CMD_SELECT:
+                        ProcEntryArray[i].cmdtype="SELECT";
+                        break;
+                case CMD_INSERT:
+                        ProcEntryArray[i].cmdtype="INSERT";
+                        break;
+                case CMD_UPDATE:
+                        ProcEntryArray[i].cmdtype="UPDATE";
+                        break;
+                case CMD_DELETE:
+                        ProcEntryArray[i].cmdtype="DELETE";
+                        break;
+                case CMD_UTILITY:
+                        ProcEntryArray[i].cmdtype="UTILITY";
+                        break;
+                case CMD_UNKNOWN:
+                        ProcEntryArray[i].cmdtype="UNKNOWN";
+                        break;
+                case CMD_NOTHING:
+                        ProcEntryArray[i].cmdtype="NOTHING";
+                        break;
+		}
+		/*
+		 * For utility statements, we just hash the query string to get an ID.
+		 */
 #if PG_VERSION_NUM >= 110000
-	if (query->queryId == UINT64CONST(0)) {
-                ProcEntryArray[i].queryid = ash_hash64_string(querytext, query_len);
+		if (query->queryId == UINT64CONST(0)) {
+			ProcEntryArray[i].queryid = ash_hash64_string(querytext, query_len);
 #else
-        if (query->queryId == 0) {
-                ProcEntryArray[i].queryid = ash_hash32_string(querytext, query_len);
+		if (query->queryId == 0) {
+			ProcEntryArray[i].queryid = ash_hash32_string(querytext, query_len);
 #endif
-        } else {
-        ProcEntryArray[i].queryid = query->queryId;
-        }
-        }
+		} else {
+			ProcEntryArray[i].queryid = query->queryId;
+		}
+	}
 }
 
 /* Estimate amount of shared memory needed for ash entry*/
 static Size
 ash_entry_memsize(void)
 {
-        Size            size;
+	Size            size;
 
-        /* AshEntryArray */
-        size = mul_size(sizeof(ashEntry), ash_max_entries);
-        /* AshEntryUsenameBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	/* AshEntryArray */
+	size = mul_size(sizeof(ashEntry), ash_max_entries);
+	/* AshEntryUsenameBuffer */
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryDatnameBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryAppnameBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryClientaddrBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryWaitEventTypeBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryWaitEventBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryStateBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryClientHostnameBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryQueryBuffer */
-        size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
+	size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
+	/* AshEntryCmdTypeBuffer */
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryTopLevelQueryBuffer */
-        size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
+	size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
 	/* AshEntryBackendTypeBuffer */
-        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	return size;
 }
 
@@ -304,13 +334,15 @@ ash_entry_memsize(void)
 static Size
 proc_entry_memsize(void)
 {
-        Size            size;
+	Size            size;
 
-        /* ProcEntryArray */
-        size = mul_size(sizeof(procEntry), get_max_procs_count());
-        /* ProEntryQueryBuffer */
-        size = add_size(size, mul_size(pgstat_track_activity_query_size, get_max_procs_count()));
-        return size;
+	/* ProcEntryArray */
+	size = mul_size(sizeof(procEntry), get_max_procs_count());
+	/* ProEntryQueryBuffer */
+	size = add_size(size, mul_size(pgstat_track_activity_query_size, get_max_procs_count()));
+	/* ProEntryCmdTypeBuffer */
+	size = add_size(size, mul_size(NAMEDATALEN, get_max_procs_count()));
+	return size;
 }
 
 
@@ -319,258 +351,292 @@ ash_shmem_startup(void)
 {
 
 	Size size;
-        bool   found;
+	bool   found;
 	char   *buffer;
 	int    i;
 
 	if (ash_prev_shmem_startup_hook)
-            	ash_prev_shmem_startup_hook();
+		ash_prev_shmem_startup_hook();
 
 	size = mul_size(sizeof(ashEntry), ash_max_entries);
 	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size, &found);
 
 	if (!found)
-        {
-         MemSet(AshEntryArray, 0, size);
-        }
+	{
+		MemSet(AshEntryArray, 0, size);
+	}
 
 	size = mul_size(sizeof(procEntry), get_max_procs_count());
-        ProcEntryArray = (procEntry *) ShmemInitStruct("Proc Entry Array", size, &found);
+	ProcEntryArray = (procEntry *) ShmemInitStruct("Proc Entry Array", size, &found);
+
+	if (!found)
+	{
+		MemSet(ProcEntryArray, 0, size);
+	}
+
+	size = mul_size(pgstat_track_activity_query_size, get_max_procs_count());
+	ProcQueryBuffer = (char *) ShmemInitStruct("Proc Query Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(ProcQueryBuffer, 0, size);
+
+		/* Initialize pointers. */
+		buffer = ProcQueryBuffer;
+		for (i = 0; i < get_max_procs_count(); i++)
+		{
+			ProcEntryArray[i].query= buffer;
+			buffer += pgstat_track_activity_query_size;
+		}
+	}
+
+        size = mul_size(NAMEDATALEN, get_max_procs_count());
+        ProcCmdTypeBuffer = (char *) ShmemInitStruct("Proc CmdType Buffer", size, &found);
 
         if (!found)
         {
-         MemSet(ProcEntryArray, 0, size);
-        }
-
-        size = mul_size(pgstat_track_activity_query_size, get_max_procs_count());
-        ProcQueryBuffer = (char *) ShmemInitStruct("Proc Query Buffer", size, &found);
-
-        if (!found)
-        {
-                MemSet(ProcQueryBuffer, 0, size);
+                MemSet(ProcCmdTypeBuffer, 0, size);
 
                 /* Initialize pointers. */
-                buffer = ProcQueryBuffer;
+                buffer = ProcCmdTypeBuffer;
                 for (i = 0; i < get_max_procs_count(); i++)
-                                        {
-                        ProcEntryArray[i].query= buffer;
-                        buffer += pgstat_track_activity_query_size;
-                }
-        }
-
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryUsenameBuffer = (char *)
-                ShmemInitStruct("Ash Entry useName Buffer", size, &found);
-
-	if (!found)
-        {
-                MemSet(AshEntryUsenameBuffer, 0, size);
-
-                /* Initialize usename pointers. */
-                buffer = AshEntryUsenameBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].usename = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
-
-
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryDatnameBuffer = (char *)
-                ShmemInitStruct("Ash Entry DatName Buffer", size, &found);
-
-	if (!found)
-        {
-                MemSet(AshEntryDatnameBuffer, 0, size);
-
-                /* Initialize Datname pointers. */
-                buffer = AshEntryDatnameBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].datname = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
-
-
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryAppnameBuffer = (char *)
-                ShmemInitStruct("Ash Entry AppName Buffer", size, &found);
-
-	if (!found)
-        {
-                MemSet(AshEntryAppnameBuffer, 0, size);
-
-                /* Initialize Appname pointers. */
-                buffer = AshEntryAppnameBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].application_name = buffer;
+                {
+                        ProcEntryArray[i].cmdtype= buffer;
                         buffer += NAMEDATALEN;
                 }
         }
 
 	size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryClientaddrBuffer = (char *)
-                ShmemInitStruct("Ash Entry Client Addr Buffer", size, &found);
-
-        if (!found)
-        {
-                MemSet(AshEntryClientaddrBuffer, 0, size);
-
-                /* Initialize Client Addr pointers. */
-                buffer = AshEntryClientaddrBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-                                        {
-                        AshEntryArray[i].client_addr = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
-
-
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryWaitEventTypeBuffer = (char *)
-                ShmemInitStruct("Ash Entry Wait event type Buffer", size, &found);
+	AshEntryUsenameBuffer = (char *)
+		ShmemInitStruct("Ash Entry useName Buffer", size, &found);
 
 	if (!found)
-        {
-                MemSet(AshEntryWaitEventTypeBuffer, 0, size);
+	{
+		MemSet(AshEntryUsenameBuffer, 0, size);
 
-                /* Initialize wait event type pointers. */
-                buffer = AshEntryWaitEventTypeBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].wait_event_type = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
-
-
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryWaitEventBuffer = (char *)
-                ShmemInitStruct("Ash Entry Wait Event Buffer", size, &found);
-
-	if (!found)
-        {
-                MemSet(AshEntryWaitEventBuffer, 0, size);
-
-                /* Initialize wait event pointers. */
-                buffer = AshEntryWaitEventBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].wait_event = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
+		/* Initialize usename pointers. */
+		buffer = AshEntryUsenameBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].usename = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
 
 
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryStateBuffer = (char *)
-                ShmemInitStruct("Ash Entry State Buffer", size, &found);
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryDatnameBuffer = (char *)
+		ShmemInitStruct("Ash Entry DatName Buffer", size, &found);
 
 	if (!found)
-        {
-                MemSet(AshEntryStateBuffer, 0, size);
+	{
+		MemSet(AshEntryDatnameBuffer, 0, size);
 
-                /* Initialize state pointers. */
-                buffer = AshEntryStateBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-			                {
-                        AshEntryArray[i].state = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
+		/* Initialize Datname pointers. */
+		buffer = AshEntryDatnameBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].datname = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
 
-        size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryClientHostnameBuffer = (char *)
-        ShmemInitStruct("Ash Entry Client Hostname Buffer", size, &found);
 
-        if (!found)
-        {
-                MemSet(AshEntryClientHostnameBuffer, 0, size);
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryAppnameBuffer = (char *)
+		ShmemInitStruct("Ash Entry AppName Buffer", size, &found);
 
-                /* Initialize client hostname pointers. */
-                buffer = AshEntryClientHostnameBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-                                        {
-                        AshEntryArray[i].client_hostname = buffer;
-                        buffer += NAMEDATALEN;
-                }
-        }
+	if (!found)
+	{
+		MemSet(AshEntryAppnameBuffer, 0, size);
 
-        size = mul_size(pgstat_track_activity_query_size, ash_max_entries);
-        AshEntryTopLevelQueryBuffer = (char *)
-        ShmemInitStruct("Ash Entry Top Level Query Buffer", size, &found);
+		/* Initialize Appname pointers. */
+		buffer = AshEntryAppnameBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].application_name = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
 
-        if (!found)
-        {
-                MemSet(AshEntryTopLevelQueryBuffer, 0, size);
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryClientaddrBuffer = (char *)
+		ShmemInitStruct("Ash Entry Client Addr Buffer", size, &found);
 
-                /* Initialize top level query pointers. */
-                buffer = AshEntryTopLevelQueryBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-                                        {
-                        AshEntryArray[i].top_level_query = buffer;
-                        buffer += pgstat_track_activity_query_size;
-                }
-        }
+	if (!found)
+	{
+		MemSet(AshEntryClientaddrBuffer, 0, size);
+
+		/* Initialize Client Addr pointers. */
+		buffer = AshEntryClientaddrBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].client_addr = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
+
+
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryWaitEventTypeBuffer = (char *)
+		ShmemInitStruct("Ash Entry Wait event type Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryWaitEventTypeBuffer, 0, size);
+
+		/* Initialize wait event type pointers. */
+		buffer = AshEntryWaitEventTypeBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].wait_event_type = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
+
+
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryWaitEventBuffer = (char *)
+		ShmemInitStruct("Ash Entry Wait Event Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryWaitEventBuffer, 0, size);
+
+		/* Initialize wait event pointers. */
+		buffer = AshEntryWaitEventBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].wait_event = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
+
+
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryStateBuffer = (char *)
+		ShmemInitStruct("Ash Entry State Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryStateBuffer, 0, size);
+
+		/* Initialize state pointers. */
+		buffer = AshEntryStateBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].state = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
+
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryClientHostnameBuffer = (char *)
+		ShmemInitStruct("Ash Entry Client Hostname Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryClientHostnameBuffer, 0, size);
+
+		/* Initialize client hostname pointers. */
+		buffer = AshEntryClientHostnameBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].client_hostname = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
 
 	size = mul_size(pgstat_track_activity_query_size, ash_max_entries);
-        AshEntryQueryBuffer = (char *)
-        ShmemInitStruct("Ash Entry Query Buffer", size, &found);
+	AshEntryTopLevelQueryBuffer = (char *)
+		ShmemInitStruct("Ash Entry Top Level Query Buffer", size, &found);
 
-        if (!found)
-        {
-                MemSet(AshEntryQueryBuffer, 0, size);
+	if (!found)
+	{
+		MemSet(AshEntryTopLevelQueryBuffer, 0, size);
 
-                /* Initialize query pointers. */
-                buffer = AshEntryQueryBuffer;
-                for (i = 0; i < ash_max_entries; i++)
-                                        {
-                        AshEntryArray[i].query = buffer;
-                        buffer += pgstat_track_activity_query_size;
-                }
-        }
+		/* Initialize top level query pointers. */
+		buffer = AshEntryTopLevelQueryBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].top_level_query = buffer;
+			buffer += pgstat_track_activity_query_size;
+		}
+	}
+
+	size = mul_size(pgstat_track_activity_query_size, ash_max_entries);
+	AshEntryQueryBuffer = (char *)
+		ShmemInitStruct("Ash Entry Query Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryQueryBuffer, 0, size);
+
+		/* Initialize query pointers. */
+		buffer = AshEntryQueryBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].query = buffer;
+			buffer += pgstat_track_activity_query_size;
+		}
+	}
 
         size = mul_size(NAMEDATALEN, ash_max_entries);
-        AshEntryBackendTypeBuffer = (char *)
-        ShmemInitStruct("Ash Entry Backend Type Buffer", size, &found);
+        AshEntryCmdTypeBuffer = (char *)
+                ShmemInitStruct("Ash Entry CmdType Buffer", size, &found);
 
         if (!found)
         {
-                MemSet(AshEntryBackendTypeBuffer, 0, size);
+                MemSet(AshEntryCmdTypeBuffer, 0, size);
 
-                /* Initialize backend type pointers. */
-                buffer = AshEntryBackendTypeBuffer;
+                /* Initialize cmdtype pointers. */
+                buffer = AshEntryCmdTypeBuffer;
                 for (i = 0; i < ash_max_entries; i++)
-                                        {
-                        AshEntryArray[i].backend_type = buffer;
+                {
+                        AshEntryArray[i].cmdtype = buffer;
                         buffer += NAMEDATALEN;
                 }
         }
 
+
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+	AshEntryBackendTypeBuffer = (char *)
+		ShmemInitStruct("Ash Entry Backend Type Buffer", size, &found);
+
+	if (!found)
+	{
+		MemSet(AshEntryBackendTypeBuffer, 0, size);
+
+		/* Initialize backend type pointers. */
+		buffer = AshEntryBackendTypeBuffer;
+		for (i = 0; i < ash_max_entries; i++)
+		{
+			AshEntryArray[i].backend_type = buffer;
+			buffer += NAMEDATALEN;
+		}
+	}
+
 	/*
-         * set up a shmem exit hook to do whatever useful (dump to disk later on?).
-         */
-        if (!IsUnderPostmaster)
-                on_shmem_exit(ash_shmem_shutdown, (Datum) 0);
+	 * set up a shmem exit hook to do whatever useful (dump to disk later on?).
+	 */
+	if (!IsUnderPostmaster)
+		on_shmem_exit(ash_shmem_shutdown, (Datum) 0);
 
 
-        if (found)
-                return;
+	if (found)
+		return;
 }
 
 static void
 ash_shmem_shutdown(int code, Datum arg)
 {
-        /* Don't try to dump during a crash. */
-        if (code)
-                return;
+	/* Don't try to dump during a crash. */
+	if (code)
+		return;
 
-        /* Safety check ... shouldn't get here unless shmem is set up. */
-        if (!AshEntryArray)
-                return;
+	/* Safety check ... shouldn't get here unless shmem is set up. */
+	if (!AshEntryArray)
+		return;
 
 	/* dump to disk ?*/
 	/* This is the place */
@@ -583,10 +649,10 @@ pgsentinel_sigterm(SIGNAL_ARGS)
 	int save_errno = errno;
 	got_sigterm = true;
 #if PG_VERSION_NUM >= 100000
-        SetLatch(MyLatch);
+	SetLatch(MyLatch);
 #else
-        if (MyProc)
-                SetLatch(&MyProc->procLatch);
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
 #endif
 	errno = save_errno;
 }
@@ -597,10 +663,10 @@ pgsentinel_sighup(SIGNAL_ARGS)
 	int save_errno = errno;
 	got_sighup = true;
 #if PG_VERSION_NUM >= 100000
-        SetLatch(MyLatch);
+	SetLatch(MyLatch);
 #else
-        if (MyProc)
-                SetLatch(&MyProc->procLatch);
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
 #endif
 	errno = save_errno;
 }
@@ -608,47 +674,48 @@ pgsentinel_sighup(SIGNAL_ARGS)
 static void
 ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
-		procEntry newprocentry;
-		int len;
-		newprocentry = search_procentry(pid);
+	procEntry newprocentry;
+	int len;
+	newprocentry = search_procentry(pid);
 
-	        memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].application_name,application_name,Min(strlen(application_name)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].wait_event,wait_event,Min(strlen(wait_event)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].client_hostname,client_hostname,Min(strlen(client_hostname)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].top_level_query,query,Min(strlen(query)+1,pgstat_track_activity_query_size-1));
-	        memcpy(AshEntryArray[inserted].backend_type,backend_type,Min(strlen(backend_type)+1,NAMEDATALEN-1));
-	        memcpy(AshEntryArray[inserted].client_addr,client_addr,Min(strlen(client_addr)+1,NAMEDATALEN-1));
-		AshEntryArray[inserted].client_port=client_port;
-		AshEntryArray[inserted].datid=datid;
-		AshEntryArray[inserted].usesysid=usesysid;
-		AshEntryArray[inserted].pid=pid;
-		AshEntryArray[inserted].backend_xmin=backend_xmin;
-		AshEntryArray[inserted].backend_xid=backend_xid;
-		AshEntryArray[inserted].backend_start=backend_start;
-		AshEntryArray[inserted].xact_start=xact_start;
-		AshEntryArray[inserted].query_start=query_start;
-		AshEntryArray[inserted].state_change=state_change;
-		AshEntryArray[inserted].queryid=newprocentry.queryid;
-		len = Max(Min(newprocentry.qlen,pgstat_track_activity_query_size-1),1);
-	        memcpy(AshEntryArray[inserted].query,newprocentry.query,len);
-		AshEntryArray[inserted].query[len]='\0';
-		AshEntryArray[inserted].ash_time=ash_time;
+	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].application_name,application_name,Min(strlen(application_name)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].wait_event,wait_event,Min(strlen(wait_event)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,Min(strlen(client_hostname)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].top_level_query,query,Min(strlen(query)+1,pgstat_track_activity_query_size-1));
+	memcpy(AshEntryArray[inserted].backend_type,backend_type,Min(strlen(backend_type)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].client_addr,client_addr,Min(strlen(client_addr)+1,NAMEDATALEN-1));
+	AshEntryArray[inserted].client_port=client_port;
+	AshEntryArray[inserted].datid=datid;
+	AshEntryArray[inserted].usesysid=usesysid;
+	AshEntryArray[inserted].pid=pid;
+	AshEntryArray[inserted].backend_xmin=backend_xmin;
+	AshEntryArray[inserted].backend_xid=backend_xid;
+	AshEntryArray[inserted].backend_start=backend_start;
+	AshEntryArray[inserted].xact_start=xact_start;
+	AshEntryArray[inserted].query_start=query_start;
+	AshEntryArray[inserted].state_change=state_change;
+	AshEntryArray[inserted].queryid=newprocentry.queryid;
+	len = Max(Min(newprocentry.qlen,pgstat_track_activity_query_size-1),1);
+	memcpy(AshEntryArray[inserted].query,newprocentry.query,len);
+	AshEntryArray[inserted].query[len]='\0';
+	strcpy(AshEntryArray[inserted].cmdtype,newprocentry.cmdtype);
+	AshEntryArray[inserted].ash_time=ash_time;
 }
 
 static void
 ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid)
 {
-        Assert(pid != NULL);
+	Assert(pid != NULL);
 
-        /* Safety check... */
-        if (!AshEntryArray) { return; }
+	/* Safety check... */
+	if (!AshEntryArray) { return; }
 
 	inserted = (inserted % ash_max_entries) + 1;
-        ash_entry_store(ash_time,inserted - 1,pid,usename,client_port,datid, datname, application_name, client_addr,backend_xmin, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, client_hostname, query, backend_type,usesysid,backend_xid);
+	ash_entry_store(ash_time,inserted - 1,pid,usename,client_port,datid, datname, application_name, client_addr,backend_xmin, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, client_hostname, query, backend_type,usesysid,backend_xid);
 }
 
 void
@@ -664,9 +731,9 @@ pgsentinel_main(Datum main_arg)
 
 	/* Connect to a database */
 #if (PG_VERSION_NUM < 110000)
-        BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL);
+	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL);
 #else
-        BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
+	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
 #endif
 
 	while (!got_sigterm)
@@ -678,7 +745,7 @@ pgsentinel_main(Datum main_arg)
 		/* Wait necessary amount of time */
 #if PG_VERSION_NUM >= 100000
 		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, ash_sampling_period * 1000L,PG_WAIT_EXTENSION);
-                ResetLatch(MyLatch);
+		ResetLatch(MyLatch);
 #else
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, ash_sampling_period * 1000L);
 		ResetLatch(&MyProc->procLatch);
@@ -706,142 +773,142 @@ pgsentinel_main(Datum main_arg)
 
 		uppercxt = CurrentMemoryContext;
 
-        	SetCurrentStatementStartTimestamp();
-        	StartTransactionCommand();
-        	SPI_connect();
-        	PushActiveSnapshot(GetTransactionSnapshot());
-        	pgstat_report_activity(STATE_RUNNING, pg_stat_activity_query);
+		SetCurrentStatementStartTimestamp();
+		StartTransactionCommand();
+		SPI_connect();
+		PushActiveSnapshot(GetTransactionSnapshot());
+		pgstat_report_activity(STATE_RUNNING, pg_stat_activity_query);
 
-        	/* We can now execute queries via SPI */
-        	ret = SPI_execute(pg_stat_activity_query,true, 0);
+		/* We can now execute queries via SPI */
+		ret = SPI_execute(pg_stat_activity_query,true, 0);
 
-        	if (ret != SPI_OK_SELECT)
-                  elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
+		if (ret != SPI_OK_SELECT)
+			elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
 
 		/* Do some processing and log stuff disconnected */
 
-                if (SPI_processed > 0)
-        	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
-		TimestampTz ash_time=GetCurrentTimestamp();
-		for (i = 0; i < SPI_processed; i++)
+		if (SPI_processed > 0)
 		{
-			bool isnull;
-			Datum data;
-			char *usenamevalue=NULL;
-			char *datnamevalue=NULL;
-			char *appnamevalue=NULL;
-			char *wait_event_typevalue=NULL;
-			char *wait_eventvalue=NULL;
-			char *client_hostnamevalue=NULL;
-			char *queryvalue=NULL;
-			char *backend_typevalue=NULL;
-			char *statevalue=NULL;
-			char *clientaddrvalue=NULL;
-			int pidvalue;
-			int client_portvalue;
-			Oid datidvalue;
-			Oid usesysidvalue;
-			TransactionId backend_xminvalue;
-			TransactionId backend_xidvalue;
-			TimestampTz backend_startvalue;
-			TimestampTz xact_startvalue;
-			TimestampTz query_startvalue;
-			TimestampTz state_changevalue;
+			MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
+			TimestampTz ash_time=GetCurrentTimestamp();
+			for (i = 0; i < SPI_processed; i++)
+			{
+				bool isnull;
+				Datum data;
+				char *usenamevalue=NULL;
+				char *datnamevalue=NULL;
+				char *appnamevalue=NULL;
+				char *wait_event_typevalue=NULL;
+				char *wait_eventvalue=NULL;
+				char *client_hostnamevalue=NULL;
+				char *queryvalue=NULL;
+				char *backend_typevalue=NULL;
+				char *statevalue=NULL;
+				char *clientaddrvalue=NULL;
+				int pidvalue;
+				int client_portvalue;
+				Oid datidvalue;
+				Oid usesysidvalue;
+				TransactionId backend_xminvalue;
+				TransactionId backend_xidvalue;
+				TimestampTz backend_startvalue;
+				TimestampTz xact_startvalue;
+				TimestampTz query_startvalue;
+				TimestampTz state_changevalue;
 
-			/* Fetch values */
+				/* Fetch values */
 
-			/* datid */
-                        datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
+				/* datid */
+				datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
 
-			/* usesysid */
-                        usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
+				/* usesysid */
+				usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
 
-			/* datname */
-			datnamevalue = DatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
+				/* datname */
+				datnamevalue = DatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
 
-			/* pid */
-			pidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
+				/* pid */
+				pidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
 
-			/* client_port */
-			client_portvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
+				/* client_port */
+				client_portvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
 
-			/* usename */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,5, &isnull);
-                        if (!isnull) {
-                        usenamevalue = DatumGetCString(data);
-                        }
+				/* usename */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,5, &isnull);
+				if (!isnull) {
+					usenamevalue = DatumGetCString(data);
+				}
 
-			/* appname */
-		        data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,6, &isnull);
-                        if (!isnull) {
-                        appnamevalue = TextDatumGetCString(data);
-                        }
+				/* appname */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,6, &isnull);
+				if (!isnull) {
+					appnamevalue = TextDatumGetCString(data);
+				}
 
-			/* wait_event_type */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,14, &isnull);
-			if (!isnull) {
-			wait_event_typevalue = TextDatumGetCString(data);
+				/* wait_event_type */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,14, &isnull);
+				if (!isnull) {
+					wait_event_typevalue = TextDatumGetCString(data);
+				}
+
+				/* wait_event */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,15, &isnull);
+				if (!isnull) {
+					wait_eventvalue = TextDatumGetCString(data);
+				}
+
+				/* state */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,16, &isnull);
+				if (!isnull) {
+					statevalue = TextDatumGetCString(data);
+				}
+
+				/* client_hostname */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull);
+				if (!isnull) {
+					client_hostnamevalue = TextDatumGetCString(data);
+				}
+
+				/* query */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,19, &isnull);
+				if (!isnull) {
+					queryvalue = TextDatumGetCString(data);
+				}
+
+				/* backend_type */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull);
+				if (!isnull) {
+					backend_typevalue = TextDatumGetCString(data);
+				}
+
+				/* client addr */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull);
+				if (!isnull) {
+					clientaddrvalue = TextDatumGetCString(data);
+				}
+
+				/* backend xid */
+				backend_xidvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
+
+				/* backedn xmin */
+				backend_xminvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
+
+				/* backend start */
+				backend_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
+
+				/* xact start */
+				xact_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
+
+				/* query start */
+				query_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
+
+				/* state change */
+				state_changevalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
+
+				/* prepare to store the entry */
+				ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue);
 			}
-
-			/* wait_event */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,15, &isnull);
-                        if (!isnull) {
-                        wait_eventvalue = TextDatumGetCString(data);
-                        }
-
-			/* state */
-                        data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,16, &isnull);
-                        if (!isnull) {
-                        statevalue = TextDatumGetCString(data);
-                        }
-
-			/* client_hostname */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull);
-                        if (!isnull) {
-                        client_hostnamevalue = TextDatumGetCString(data);
-                        }
-
-			/* query */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,19, &isnull);
-                        if (!isnull) {
-                        queryvalue = TextDatumGetCString(data);
-                        }
-
-			/* backend_type */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull);
-                        if (!isnull) {
-                        backend_typevalue = TextDatumGetCString(data);
-                        }
-
-			/* client addr */
-			data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull);
-                        if (!isnull) {
-                        clientaddrvalue = TextDatumGetCString(data);
-                        }
-
-			/* backend xid */
-			backend_xidvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
-
-			/* backedn xmin */
-			backend_xminvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
-
-			/* backend start */
-			backend_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
-
-			/* xact start */
-			xact_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
-
-			/* query start */
-			query_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
-
-			/* state change */
-			state_changevalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
-
-			/* prepare to store the entry */
-			ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue);
-		}
-		MemoryContextSwitchTo(oldcxt);
+			MemoryContextSwitchTo(oldcxt);
 		}
 		SPI_finish();
 		PopActiveSnapshot();
@@ -856,39 +923,39 @@ static void
 pgsentinel_load_params(void)
 {
 	DefineCustomIntVariable("pgsentinel_ash.sampling_period",
-                            "Duration between each pull (in seconds).",
-                            NULL,
-                            &ash_sampling_period,
-                            1,
-                            1,
-                            INT_MAX,
-                            PGC_SIGHUP,
-                            0,
-                            NULL,
-                            NULL,
-                            NULL);
+							"Duration between each pull (in seconds).",
+							NULL,
+							&ash_sampling_period,
+							1,
+							1,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	DefineCustomIntVariable("pgsentinel_ash.max_entries",
-                            "Maximum number of ash entries.",
-                            NULL,
-                            &ash_max_entries,
-                            1000,
-                            1000,
-                            INT_MAX,
-                            PGC_SIGHUP,
-                            0,
-                            NULL,
-                            NULL,
-                            NULL);
+							"Maximum number of ash entries.",
+							NULL,
+							&ash_max_entries,
+							1000,
+							1000,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
-        DefineCustomStringVariable("pgsentinel.db_name",
-                	gettext_noop("Database on which the worker connect."),
-                	NULL,
-                	&pgsentinelDbName,
-                	"postgres",
-                	PGC_POSTMASTER,
-                	GUC_SUPERUSER_ONLY,
-                	NULL, NULL, NULL);
+	DefineCustomStringVariable("pgsentinel.db_name",
+							   gettext_noop("Database on which the worker connect."),
+							   NULL,
+							   &pgsentinelDbName,
+							   "postgres",
+							   PGC_POSTMASTER,
+							   GUC_SUPERUSER_ONLY,
+							   NULL, NULL, NULL);
 }
 
 /*
@@ -903,36 +970,36 @@ _PG_init(void)
 	/* Add parameters */
 	pgsentinel_load_params();
 
-        if (!process_shared_preload_libraries_in_progress)
-                return;
+	if (!process_shared_preload_libraries_in_progress)
+		return;
 
-        EmitWarningsOnPlaceholders("Ash Entry Array");
-        RequestAddinShmemSpace(ash_entry_memsize());
-        RequestNamedLWLockTranche("Ash Entry Array", 1);
+	EmitWarningsOnPlaceholders("Ash Entry Array");
+	RequestAddinShmemSpace(ash_entry_memsize());
+	RequestNamedLWLockTranche("Ash Entry Array", 1);
 
-        EmitWarningsOnPlaceholders("Proc Entry Array");
-        RequestAddinShmemSpace(proc_entry_memsize());
-        RequestNamedLWLockTranche("Proc Entry Array", 1);
+	EmitWarningsOnPlaceholders("Proc Entry Array");
+	RequestAddinShmemSpace(proc_entry_memsize());
+	RequestNamedLWLockTranche("Proc Entry Array", 1);
 
 
-        /*
-         * Install hooks.
-         */
-        ash_prev_shmem_startup_hook = shmem_startup_hook;
-        shmem_startup_hook = ash_shmem_startup;
-        prev_post_parse_analyze_hook = post_parse_analyze_hook;
-        post_parse_analyze_hook = ash_post_parse_analyze;
+	/*
+	 * Install hooks.
+	 */
+	ash_prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook = ash_shmem_startup;
+	prev_post_parse_analyze_hook = post_parse_analyze_hook;
+	post_parse_analyze_hook = ash_post_parse_analyze;
 
 	/* Worker parameter and registration */
-        memset(&worker, 0, sizeof(worker));
+	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 #if PG_VERSION_NUM >= 100000
-        sprintf(worker.bgw_library_name, "pgsentinel");
-        sprintf(worker.bgw_function_name, "pgsentinel_main");
+	sprintf(worker.bgw_library_name, "pgsentinel");
+	sprintf(worker.bgw_function_name, "pgsentinel_main");
 #else
-        worker.bgw_main = pgsentinel_main;
+	worker.bgw_main = pgsentinel_main;
 #endif
 	snprintf(worker.bgw_name, BGW_MAXLEN, "%s", worker_name);
 	/* Wait 10 seconds for restart before crash */
@@ -951,53 +1018,53 @@ _PG_init(void)
 static void
 pg_active_session_history_internal(FunctionCallInfo fcinfo)
 {
-        ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-        TupleDesc       tupdesc;
-        Tuplestorestate *tupstore;
-        MemoryContext per_query_ctx;
-        MemoryContext oldcontext;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc       tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
 	int i;
 
-        /* Entry array must exist already */
-        if (!AshEntryArray)
-                ereport(ERROR,
-                                (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                                 errmsg("pg_active_session_history must be loaded via shared_preload_libraries")));
+	/* Entry array must exist already */
+	if (!AshEntryArray)
+		ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("pg_active_session_history must be loaded via shared_preload_libraries")));
 
-        /* check to see if caller supports us returning a tuplestore */
-        if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-                ereport(ERROR,
-                                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                                 errmsg("set-valued function called in context that cannot accept a set")));
-        if (!(rsinfo->allowedModes & SFRM_Materialize))
-                ereport(ERROR,
-                                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                                 errmsg("materialize mode required, but it is not " \
-                                                "allowed in this context")));
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("materialize mode required, but it is not " \
+					   "allowed in this context")));
 
-        /* Switch context to construct returned data structures */
-        per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-        oldcontext = MemoryContextSwitchTo(per_query_ctx);
+	/* Switch context to construct returned data structures */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
-        /* Build a tuple descriptor */
-        if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-                elog(ERROR, "return type must be a row type");
+	/* Build a tuple descriptor */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
 
-        tupstore = tuplestore_begin_heap(true, false, work_mem);
-        rsinfo->returnMode = SFRM_Materialize;
-        rsinfo->setResult = tupstore;
-        rsinfo->setDesc = tupdesc;
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
 
-        MemoryContextSwitchTo(oldcontext);
+	MemoryContextSwitchTo(oldcontext);
 
 	for (i = 0; i < ash_max_entries; i++)
-        {
-                Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
-                bool            nulls[PG_ACTIVE_SESSION_HISTORY_COLS];
-                int                     j = 0;
+	{
+		Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
+		bool            nulls[PG_ACTIVE_SESSION_HISTORY_COLS];
+		int                     j = 0;
 
-                memset(values, 0, sizeof(values));
-                memset(nulls, 0, sizeof(nulls));
+		memset(values, 0, sizeof(values));
+		memset(nulls, 0, sizeof(nulls));
 
 		// ash_time
 		if (TimestampTzGetDatum(AshEntryArray[i].ash_time))
@@ -1013,9 +1080,9 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		// datname
 		if (AshEntryArray[i].datname[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].datname);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].datname);
+		else
+			nulls[j++] = true;
 
 		// pid
 		if (Int32GetDatum(AshEntryArray[i].pid))
@@ -1031,27 +1098,27 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		// usename
 		if (AshEntryArray[i].usename[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].usename);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].usename);
+		else
+			nulls[j++] = true;
 
 		// application_name
 		if (AshEntryArray[i].application_name[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].application_name);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].application_name);
+		else
+			nulls[j++] = true;
 
 		// client_addr
-                if (AshEntryArray[i].client_addr[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].client_addr);
-                else
-                        nulls[j++] = true;
+		if (AshEntryArray[i].client_addr[0] != '\0')
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].client_addr);
+		else
+			nulls[j++] = true;
 
 		// client_hostname
 		if (AshEntryArray[i].client_hostname[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].client_hostname);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].client_hostname);
+		else
+			nulls[j++] = true;
 
 		// client_port
 		if (Int32GetDatum(AshEntryArray[i].client_port))
@@ -1061,68 +1128,74 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		// backend_start
 		if (TimestampTzGetDatum(AshEntryArray[i].backend_start))
-                        values[j++] = TimestampTzGetDatum(AshEntryArray[i].backend_start);
-                else
-                        nulls[j++] = true;
+			values[j++] = TimestampTzGetDatum(AshEntryArray[i].backend_start);
+		else
+			nulls[j++] = true;
 
 		// xact_start
 		if (TimestampTzGetDatum(AshEntryArray[i].xact_start))
-                        values[j++] = TimestampTzGetDatum(AshEntryArray[i].xact_start);
-                else
-                        nulls[j++] = true;
+			values[j++] = TimestampTzGetDatum(AshEntryArray[i].xact_start);
+		else
+			nulls[j++] = true;
 
 		// query_start
 		if (TimestampTzGetDatum(AshEntryArray[i].query_start))
-                        values[j++] = TimestampTzGetDatum(AshEntryArray[i].query_start);
-                else
-                        nulls[j++] = true;
+			values[j++] = TimestampTzGetDatum(AshEntryArray[i].query_start);
+		else
+			nulls[j++] = true;
 
 		// state_change
 		if (TimestampTzGetDatum(AshEntryArray[i].state_change))
-                        values[j++] = TimestampTzGetDatum(AshEntryArray[i].state_change);
-                else
-                        nulls[j++] = true;
+			values[j++] = TimestampTzGetDatum(AshEntryArray[i].state_change);
+		else
+			nulls[j++] = true;
 
 		// wait_event_type
 		if (AshEntryArray[i].wait_event_type[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].wait_event_type);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].wait_event_type);
+		else
+			nulls[j++] = true;
 
 		// wait_event
 		if (AshEntryArray[i].wait_event[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].wait_event);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].wait_event);
+		else
+			nulls[j++] = true;
 
 		// state
 		if (AshEntryArray[i].state[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].state);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].state);
+		else
+			nulls[j++] = true;
 
 		// backend_xid
 		if (TransactionIdGetDatum(AshEntryArray[i].backend_xid))
-                        values[j++] = TransactionIdGetDatum(AshEntryArray[i].backend_xid);
-                else
-                        nulls[j++] = true;
+			values[j++] = TransactionIdGetDatum(AshEntryArray[i].backend_xid);
+		else
+			nulls[j++] = true;
 
 		// backend_xmin
 		if (TransactionIdGetDatum(AshEntryArray[i].backend_xmin))
-                        values[j++] = TransactionIdGetDatum(AshEntryArray[i].backend_xmin);
-                else
-                        nulls[j++] = true;
+			values[j++] = TransactionIdGetDatum(AshEntryArray[i].backend_xmin);
+		else
+			nulls[j++] = true;
 
 		// top_level_query
-	        if (AshEntryArray[i].top_level_query[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
-                else
-                        nulls[j++] = true;
+		if (AshEntryArray[i].top_level_query[0] != '\0')
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
+		else
+			nulls[j++] = true;
 
 		// query
-                if (AshEntryArray[i].query[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
-                else
+		if (AshEntryArray[i].query[0] != '\0')
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
+		else
+			nulls[j++] = true;
+
+		// cmdtype
+		if (AshEntryArray[i].cmdtype[0] != '\0')
+                        values[j++] = CStringGetTextDatum(AshEntryArray[i].cmdtype);
+		else
                         nulls[j++] = true;
 
 		// query_id
@@ -1130,28 +1203,28 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		// backend_type
 		if (AshEntryArray[i].backend_type[0] != '\0')
-                        values[j++] = CStringGetTextDatum(AshEntryArray[i].backend_type);
-                else
-                        nulls[j++] = true;
+			values[j++] = CStringGetTextDatum(AshEntryArray[i].backend_type);
+		else
+			nulls[j++] = true;
 
-                tuplestore_putvalues(tupstore, tupdesc, values, nulls);
-        }
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
 
-        /* clean up and return the tuplestore */
-        tuplestore_donestoring(tupstore);
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
 }
 
 Datum
 pg_active_session_history(PG_FUNCTION_ARGS)
 {
-       pg_active_session_history_internal(fcinfo);
-       return (Datum) 0;
+	pg_active_session_history_internal(fcinfo);
+	return (Datum) 0;
 }
 
 void
 _PG_fini(void)
 {
-        /* Uninstall hooks. */
-        shmem_startup_hook = ash_prev_shmem_startup_hook;
+	/* Uninstall hooks. */
+	shmem_startup_hook = ash_prev_shmem_startup_hook;
 	post_parse_analyze_hook = prev_post_parse_analyze_hook;
 }

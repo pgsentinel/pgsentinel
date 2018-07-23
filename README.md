@@ -98,6 +98,7 @@ Usage
   | backend_xmin     | xid                      |           |          |  |
   | top_level_query  | text                     |           |          |  |
   | query            | text                     |           |          |  |
+  | cmdtype          | text                     |           |          |  |
   | queryid          | bigint                   |           |          |  |
   | backend_type     | text                     |           |          |  |
 
@@ -106,6 +107,7 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 * `ash_time`: the sampling time
 * `top_level_query`: the top level statement (in case PL/pgSQL is used)
 * `query`: the statement being executed (not normalised, as it is in `pg_stat_statements`, means you see the values)
+* `cmdtype`: the statement type (SELECT,UPDATE,INSERT,DELETE,UTILITY,UNKNOWN,NOTHING)
 * `queryid`: the queryid of the statement which links to pg_stat_statements
 
 The worker is controlled by the following GUCs:.

@@ -23,6 +23,7 @@ CREATE FUNCTION pg_active_session_history(
     OUT backend_xmin xid,
     OUT top_level_query text,
     OUT query text,
+    OUT cmdtype text,
     OUT queryid bigint,
     OUT backend_type text
    
