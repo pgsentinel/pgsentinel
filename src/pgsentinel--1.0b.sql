@@ -21,14 +21,15 @@ CREATE FUNCTION pg_active_session_history(
     OUT state text,
     OUT backend_xid xid,
     OUT backend_xmin xid,
-    OUT blockers integer,
-    OUT blockerpid integer,
     OUT top_level_query text,
     OUT query text,
     OUT cmdtype text,
     OUT queryid bigint,
-    OUT backend_type text
-   
+    OUT backend_type text,
+    OUT blockers integer,
+    OUT blockerpid integer,
+    OUT blocker_state text,
+    OUT blocker_queryid bigint
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'pg_active_session_history'

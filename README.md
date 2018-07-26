@@ -101,6 +101,10 @@ Usage
   | cmdtype          | text                     |           |          |  |
   | queryid          | bigint                   |           |          |  |
   | backend_type     | text                     |           |          |  |
+  | blockers         | integer                  |           |          |  |
+  | blockerpid       | integer                  |           |          |  |
+  | blocker_state    | text                     |           |          |  |
+  | blocker_queryid  | bigint                   |           |          |  |
 
 You could see it as samplings of `pg_stat_activity` providing more information:
 
@@ -109,6 +113,10 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 * `query`: the statement being executed (not normalised, as it is in `pg_stat_statements`, means you see the values)
 * `cmdtype`: the statement type (SELECT,UPDATE,INSERT,DELETE,UTILITY,UNKNOWN,NOTHING)
 * `queryid`: the queryid of the statement which links to pg_stat_statements
+* `blockers`: the number of blockers
+* `blockerpid`: the pid of the blocker (if blockers = 1), the pid of one blocker (if blockers > 1)
+* `blocker_state`: state of the blocker (state of the blockerpid) 
+* `blocker_queryid`: queryid of the blocker (queryid of the blockerpid) 
 
 The worker is controlled by the following GUCs:.
 

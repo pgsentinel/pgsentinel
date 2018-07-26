@@ -39,7 +39,7 @@
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        26
+#define PG_ACTIVE_SESSION_HISTORY_COLS        28
 
 /* Entry point of library loading */
 void _PG_init(void);
@@ -77,7 +77,7 @@ static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
 static const char * const pg_stat_activity_query=
-"select datid, datname, pid, usesysid, usename, application_name, text(client_addr), client_hostname, client_port, backend_start, xact_start, query_start, state_change, case when wait_event_type is null and state != 'idle in transaction' then 'CPU' else wait_event_type end as wait_event_type,case when wait_event is null and state != 'idle in transaction' then 'CPU' else wait_event end as wait_event, state, backend_xid, backend_xmin, query, backend_type,(pg_blocking_pids(pid))[1],cardinality(pg_blocking_pids(pid)) from pg_stat_activity where state in ('active','idle in transaction') and pid != pg_backend_pid()";
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, act.application_name, text(act.client_addr), act.client_hostname, act.client_port, act.backend_start, act.xact_start, act.query_start, act.state_change, case when act.wait_event_type is null then 'CPU' else act.wait_event_type end as wait_event_type,case when act.wait_event is null then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1],cardinality(pg_blocking_pids(act.pid)),blk.state from pg_stat_activity act left join pg_stat_activity blk on (pg_blocking_pids(act.pid))[1] = blk.pid  where act.state ='active' and act.pid != pg_backend_pid()";
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 
@@ -86,6 +86,7 @@ typedef struct ashEntry
 {
 	int pid;
 	uint64 queryid;
+	uint64 blocker_queryid;
 	TimestampTz ash_time;
 	Oid datid;
 	Oid usesysid;
@@ -96,6 +97,7 @@ typedef struct ashEntry
 	char *wait_event_type;
 	char *wait_event;
 	char *state;
+	char *blocker_state;
 	char *client_hostname;
 	int blockers;
 	int blockerpid;
@@ -133,6 +135,7 @@ static char *AshEntryQueryBuffer = NULL;
 static char *AshEntryCmdTypeBuffer = NULL;
 static char *AshEntryBackendTypeBuffer = NULL;
 static char *AshEntryStateBuffer = NULL;
+static char *AshEntryBlockerStateBuffer = NULL;
 static char *AshEntryClientaddrBuffer = NULL;
 static ashEntry *AshEntryArray = NULL;
 static procEntry *ProcEntryArray = NULL;
@@ -148,13 +151,13 @@ static Size proc_entry_memsize(void);
 static procEntry search_procentry(int backendPid);
 
 /* store ash entry */
-static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid);
+static void ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename, const int client_port,Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state);
 
 /* to rotate the ash entries */
 static int inserted=0;
 
 /* prepare store ash */
-static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid);
+static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state);
 
 /* get max procs */
 static int get_max_procs_count(void);
@@ -329,6 +332,9 @@ ash_entry_memsize(void)
 	size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
 	/* AshEntryBackendTypeBuffer */
 	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+	/* AshEntryBlockerStateBuffer */
+        size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
+
 	return size;
 }
 
@@ -618,6 +624,23 @@ ash_shmem_startup(void)
 		}
 	}
 
+	size = mul_size(NAMEDATALEN, ash_max_entries);
+        AshEntryBlockerStateBuffer = (char *)
+                ShmemInitStruct("Ash Entry Blocker State Buffer", size, &found);
+
+        if (!found)
+        {
+                MemSet(AshEntryBlockerStateBuffer, 0, size);
+
+                /* Initialize state pointers. */
+                buffer = AshEntryBlockerStateBuffer;
+                for (i = 0; i < ash_max_entries; i++)
+                {
+                        AshEntryArray[i].blocker_state = buffer;
+                        buffer += NAMEDATALEN;
+                }
+        }
+
 	/*
 	 * set up a shmem exit hook to do whatever useful (dump to disk later on?).
 	 */
@@ -674,11 +697,14 @@ pgsentinel_sighup(SIGNAL_ARGS)
 }
 
 static void
-ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid)
+ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state)
 {
 	procEntry newprocentry;
+	procEntry blockerprocentry;
 	int len;
 	newprocentry = search_procentry(pid);
+	if (blockerpid)
+		blockerprocentry = search_procentry(blockerpid);
 
 	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,NAMEDATALEN-1));
@@ -686,6 +712,7 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 	memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].wait_event,wait_event,Min(strlen(wait_event)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].blocker_state,blocker_state,Min(strlen(blocker_state)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,Min(strlen(client_hostname)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].top_level_query,query,Min(strlen(query)+1,pgstat_track_activity_query_size-1));
 	memcpy(AshEntryArray[inserted].backend_type,backend_type,Min(strlen(backend_type)+1,NAMEDATALEN-1));
@@ -708,10 +735,12 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 	AshEntryArray[inserted].ash_time=ash_time;
 	AshEntryArray[inserted].blockers=blockers;
 	AshEntryArray[inserted].blockerpid=blockerpid;
+	if (blockerpid)
+		AshEntryArray[inserted].blocker_queryid=blockerprocentry.queryid;
 }
 
 static void
-ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid)
+ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state)
 {
 	Assert(pid != NULL);
 
@@ -719,7 +748,7 @@ ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const
 	if (!AshEntryArray) { return; }
 
 	inserted = (inserted % ash_max_entries) + 1;
-	ash_entry_store(ash_time,inserted - 1,pid,usename,client_port,datid, datname, application_name, client_addr,backend_xmin, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, client_hostname, query, backend_type,usesysid,backend_xid, blockers, blockerpid);
+	ash_entry_store(ash_time,inserted - 1,pid,usename,client_port,datid, datname, application_name, client_addr,backend_xmin, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, client_hostname, query, backend_type,usesysid,backend_xid, blockers, blockerpid, blocker_state);
 }
 
 void
@@ -808,6 +837,7 @@ pgsentinel_main(Datum main_arg)
 				char *queryvalue=NULL;
 				char *backend_typevalue=NULL;
 				char *statevalue=NULL;
+				char *blockerstatevalue=NULL;
 				char *clientaddrvalue=NULL;
 				int pidvalue;
 				int client_portvalue;
@@ -875,6 +905,12 @@ pgsentinel_main(Datum main_arg)
 					statevalue = TextDatumGetCString(data);
 				}
 
+				/* blocker state */
+                                data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull);
+                                if (!isnull) {
+                                        blockerstatevalue = TextDatumGetCString(data);
+                                }
+
 				/* client_hostname */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull);
 				if (!isnull) {
@@ -918,7 +954,7 @@ pgsentinel_main(Datum main_arg)
 				state_changevalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
 
 				/* prepare to store the entry */
-				ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue,blockersvalue,blockerpidvalue);
+				ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue,blockersvalue,blockerpidvalue,blockerstatevalue ? blockerstatevalue : "\0");
 			}
 			MemoryContextSwitchTo(oldcxt);
 		}
@@ -1192,18 +1228,6 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// blockers
-                if (Int32GetDatum(AshEntryArray[i].blockers))
-                        values[j++] = Int32GetDatum(AshEntryArray[i].blockers);
-                else
-                        nulls[j++] = true;
-
-		// blockerspid
-                if (Int32GetDatum(AshEntryArray[i].blockerpid))
-                        values[j++] = Int32GetDatum(AshEntryArray[i].blockerpid);
-                else
-                        nulls[j++] = true;
-
 		// top_level_query
 		if (AshEntryArray[i].top_level_query[0] != '\0')
 			values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
@@ -1234,6 +1258,30 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 			values[j++] = CStringGetTextDatum(AshEntryArray[i].backend_type);
 		else
 			nulls[j++] = true;
+
+		// blockers
+                if (Int32GetDatum(AshEntryArray[i].blockers))
+                        values[j++] = Int32GetDatum(AshEntryArray[i].blockers);
+                else
+                        nulls[j++] = true;
+
+                // blockerspid
+                if (Int32GetDatum(AshEntryArray[i].blockerpid))
+                        values[j++] = Int32GetDatum(AshEntryArray[i].blockerpid);
+                else
+                        nulls[j++] = true;
+
+		// blocker state
+                if (AshEntryArray[i].blocker_state[0] != '\0')
+                        values[j++] = CStringGetTextDatum(AshEntryArray[i].blocker_state);
+                else
+                        nulls[j++] = true;
+
+		// blocker query_id
+                if (Int32GetDatum(AshEntryArray[i].blockers))
+                        values[j++] = Int64GetDatum(AshEntryArray[i].blocker_queryid);
+                else
+                        nulls[j++] = true;
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
