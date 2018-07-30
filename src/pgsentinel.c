@@ -39,7 +39,7 @@
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        28
+#define PG_ACTIVE_SESSION_HISTORY_COLS        27
 
 /* Entry point of library loading */
 void _PG_init(void);
@@ -86,7 +86,6 @@ typedef struct ashEntry
 {
 	int pid;
 	uint64 queryid;
-	uint64 blocker_queryid;
 	TimestampTz ash_time;
 	Oid datid;
 	Oid usesysid;
@@ -700,12 +699,8 @@ static void
 ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state)
 {
 	procEntry newprocentry;
-	procEntry blockerprocentry;
 	int len;
 	newprocentry = search_procentry(pid);
-	if (blockerpid)
-		blockerprocentry = search_procentry(blockerpid);
-
 	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].application_name,application_name,Min(strlen(application_name)+1,NAMEDATALEN-1));
@@ -735,8 +730,6 @@ ash_entry_store(TimestampTz ash_time, int inserted,const int pid,const char *use
 	AshEntryArray[inserted].ash_time=ash_time;
 	AshEntryArray[inserted].blockers=blockers;
 	AshEntryArray[inserted].blockerpid=blockerpid;
-	if (blockerpid)
-		AshEntryArray[inserted].blocker_queryid=blockerprocentry.queryid;
 }
 
 static void
@@ -1274,12 +1267,6 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		// blocker state
                 if (AshEntryArray[i].blocker_state[0] != '\0')
                         values[j++] = CStringGetTextDatum(AshEntryArray[i].blocker_state);
-                else
-                        nulls[j++] = true;
-
-		// blocker query_id
-                if (Int32GetDatum(AshEntryArray[i].blockers))
-                        values[j++] = Int64GetDatum(AshEntryArray[i].blocker_queryid);
                 else
                         nulls[j++] = true;
 

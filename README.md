@@ -104,7 +104,6 @@ Usage
   | blockers         | integer                  |           |          |  |
   | blockerpid       | integer                  |           |          |  |
   | blocker_state    | text                     |           |          |  |
-  | blocker_queryid  | bigint                   |           |          |  |
 
 You could see it as samplings of `pg_stat_activity` providing more information:
 
@@ -116,7 +115,6 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 * `blockers`: the number of blockers
 * `blockerpid`: the pid of the blocker (if blockers = 1), the pid of one blocker (if blockers > 1)
 * `blocker_state`: state of the blocker (state of the blockerpid) 
-* `blocker_queryid`: queryid of the blocker (queryid of the blockerpid) 
 
 The worker is controlled by the following GUCs:.
 
