@@ -127,10 +127,10 @@ The worker is controlled by the following GUCs:.
 
 See how to query the view in this short video
 -------------
-[![Alt text](https://www.pgsentinel.com/images/pgSentinel.png)](https://vimeo.com/278781365)
+[![Alt text](https://raw.githubusercontent.com/pgsentinel/pg_ash_scripts/master/images/video_pg_ash_scripts.PNG)](https://www.youtube.com/watch?v=WVKzKjlK75U)
 
 
-### The videos are available on [vimeo](https://vimeo.com/user87030260) 
+### The videos are available on [youtube](https://www.youtube.com/channel/UCGVciSS2YwnPhtHHGB3Ep3A) 
 
 
 Contribution
