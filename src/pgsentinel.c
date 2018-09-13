@@ -77,7 +77,11 @@ static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
 static const char * const pg_stat_activity_query=
+#if (PG_VERSION_NUM / 100 ) == 906
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, act.application_name, text(act.client_addr), act.client_hostname, act.client_port, act.backend_start, act.xact_start, act.query_start, act.state_change, case when act.wait_event_type is null then 'CPU' else act.wait_event_type end as wait_event_type,case when act.wait_event is null then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1],cardinality(pg_blocking_pids(act.pid)),blk.state from pg_stat_activity act left join pg_stat_activity blk on (pg_blocking_pids(act.pid))[1] = blk.pid  where act.state ='active' and act.pid != pg_backend_pid()";
+#else
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, act.application_name, text(act.client_addr), act.client_hostname, act.client_port, act.backend_start, act.xact_start, act.query_start, act.state_change, case when act.wait_event_type is null then 'CPU' else act.wait_event_type end as wait_event_type,case when act.wait_event is null then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1],cardinality(pg_blocking_pids(act.pid)),blk.state from pg_stat_activity act left join pg_stat_activity blk on (pg_blocking_pids(act.pid))[1] = blk.pid  where act.state ='active' and act.pid != pg_backend_pid()";
+#endif
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 
@@ -226,9 +230,11 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
 		const char *querytext = pstate->p_sourcetext;
-		int query_location = query->stmt_location;
-		int query_len = query->stmt_len;
 		int minlen;
+		int query_len;
+#if PG_VERSION_NUM >= 100000
+		int query_location = query->stmt_location;
+		query_len = query->stmt_len;
 
 		if (query_location >= 0)
 		{
@@ -255,6 +261,9 @@ ash_post_parse_analyze(ParseState *pstate, Query *query)
 			querytext++, query_location++, query_len--;
 		while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
 			query_len--;
+#else
+	        query_len = strlen(querytext);		
+#endif		
 
 		minlen = Min(query_len,pgstat_track_activity_query_size-1);
 		memcpy(ProcEntryArray[i].query,querytext,minlen);
@@ -859,11 +868,19 @@ pgsentinel_main(Datum main_arg)
 				/* pid */
 				pidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
 
+#if PG_VERSION_NUM >= 100000
 				/* blockerpid */
 				blockerpidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
 
 				/* blockers */
 				blockersvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull));
+#else
+				/* blockerpid */
+				blockerpidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull));
+
+				/* blockers */
+				blockersvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
+#endif
 
 				/* client_port */
 				client_portvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
@@ -898,11 +915,19 @@ pgsentinel_main(Datum main_arg)
 					statevalue = TextDatumGetCString(data);
 				}
 
+#if PG_VERSION_NUM >= 100000
 				/* blocker state */
                                 data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull);
                                 if (!isnull) {
                                         blockerstatevalue = TextDatumGetCString(data);
                                 }
+#else
+				/* blocker state */
+                                data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull);
+                                if (!isnull) {
+                                        blockerstatevalue = TextDatumGetCString(data);
+                                }
+#endif
 
 				/* client_hostname */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull);
@@ -916,11 +941,13 @@ pgsentinel_main(Datum main_arg)
 					queryvalue = TextDatumGetCString(data);
 				}
 
+#if PG_VERSION_NUM >= 100000
 				/* backend_type */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull);
 				if (!isnull) {
 					backend_typevalue = TextDatumGetCString(data);
 				}
+#endif
 
 				/* client addr */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull);

@@ -37,15 +37,15 @@ PostgreSQL installation. It is available from
 [github](https://github.com/pgsentinel/pgsentinel)
 under the same license as
 [GNU AFFERO GENERAL PUBLIC LICENSE](https://github.com/pgsentinel/pgsentinel/blob/master/LICENSE)
-and supports PostgreSQL 10+.
+and supports PostgreSQL 9.6+.
 
 Installation
 ------------
 
-`pgsentinel` is a PostgreSQL extension which requires PostgreSQL 10 or
+`pgsentinel` is a PostgreSQL extension which requires PostgreSQL 9.6 or
 higher. Before build and install you should ensure the following:
 
- * PostgreSQL version is 10 or higher.
+ * PostgreSQL version is 9.6 or higher.
  * You have development package of PostgreSQL installed or you built
    PostgreSQL from source.
  * Your PATH variable is configured so that `pg_config` command available, or
@@ -124,6 +124,11 @@ The worker is controlled by the following GUCs:.
 | pgsentinel_ash.max_entries     | int4      | Size of history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
 
+Remarks for PostgreSQL 9.6
+-------------------------
+
+* The `backend_type` field does not exist into the `pg_stat_activity` view
+* The `backend_type` field exists into the `pg_active_session_history` view and is always NULL (as a consequence of the previous remark)
 
 See how to query the view in this short video
 -------------
