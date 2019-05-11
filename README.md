@@ -46,8 +46,7 @@ Installation
 higher. Before build and install you should ensure the following:
 
  * PostgreSQL version is 9.6 or higher.
- * You have development package of PostgreSQL installed or you built
-   PostgreSQL from source.
+ * You built PostgreSQL from source.
  * Your PATH variable is configured so that `pg_config` command available, or
    set PG_CONFIG variable.
 
