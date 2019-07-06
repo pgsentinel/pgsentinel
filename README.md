@@ -11,7 +11,6 @@ behavior user have to sample the pg_stat_activity view multiple times.
 `pgsentinel` is an extension to record active session history and also link
  the activity with query statistics (`pg_stat_statements`).
 
-
 The module must be loaded by adding `pgsentinel` to
 `shared_preload_libraries` in postgresql.conf, means that a server restart
 is needed to add or remove the module.
@@ -25,6 +24,11 @@ When `pgsentinel` is enabled, it collects the history of session activity:
    
 In combination with `pg_stat_statements` this extension can also link the session activity with
 query statistics.
+
+To get more granular queries statistic `pgsentinel` extension samples the `pg_stat_statements` view:
+
+ * at the same time it is sampling the active sessions
+ * only for the queryid that were associated to an active session (if any) during the sampling
 
 `pgsentinel` launches special background worker for gathering the
 sessions activity.
@@ -46,7 +50,8 @@ Installation
 higher. Before build and install you should ensure the following:
 
  * PostgreSQL version is 9.6 or higher.
- * You built PostgreSQL from source.
+ * You have development package of PostgreSQL installed or you built
+   PostgreSQL from source.
  * Your PATH variable is configured so that `pg_config` command available, or
    set PG_CONFIG variable.
 
@@ -115,13 +120,41 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 * `blockerpid`: the pid of the blocker (if blockers = 1), the pid of one blocker (if blockers > 1)
 * `blocker_state`: state of the blocker (state of the blockerpid) 
 
-The worker is controlled by the following GUCs:.
+`pgsentinel` also reports the queries statistics history through the `pg_stat_statements_history` view:
+
+
+ |     Column      |           Type           | Collation | Nullable | Default  |
+ | ------------------ | -------------------------- | -----------  | ----------  | ---------  |
+| ash_time            | timestamp with time zone |           |          | |
+| userid              | oid                      |           |          | |
+| dbid                | oid                      |           |          | |
+| queryid             | bigint                   |           |          | |
+| calls               | bigint                   |           |          | |
+| total_time          | double precision         |           |          | |
+| rows                | bigint                   |           |          | |
+| shared_blks_hit     | bigint                   |           |          | |
+| shared_blks_read    | bigint                   |           |          | |
+| shared_blks_dirtied | bigint                   |           |          | |
+| shared_blks_written | bigint                   |           |          | |
+| local_blks_hit      | bigint                   |           |          | |
+| local_blks_read     | bigint                   |           |          | |
+| local_blks_dirtied  | bigint                   |           |          | |
+| local_blks_written  | bigint                   |           |          | |
+| temp_blks_read      | bigint                   |           |          | |
+| temp_blks_written   | bigint                   |           |          | |
+| blk_read_time       | double precision         |           |          | |
+| blk_write_time      | double precision         |           |          | |
+
+The fields description are the same as for `pg_stat_statements` (except for the `ash_time` one, which is the time of the active session history sampling)
+
+The worker is controlled by the following GUCs:
 
 |         Parameter name              | Data type |                  Description                | Default value | Min value  |
 | ----------------------------------- | --------- | ------------------------------------------- | ------------  | -------- |
 | pgsentinel_ash.sampling_period     | int4      | Period for history sampling in seconds |            1 | 1 |
-| pgsentinel_ash.max_entries     | int4      | Size of history in-memory ring buffer |            1000 | 1000 |
+| pgsentinel_ash.max_entries     | int4      | Size of pg_active_session_history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
+| pgsentinel_pgssh.max_entries     | int4      | Size of pg_stat_statements_history in-memory ring buffer |            1000 | 1000 |
 
 Remarks for PostgreSQL 9.6
 -------------------------
@@ -151,4 +184,4 @@ Author
 -------
  
  * Bertrand Drouvot <bdrouvot@gmail.com>,
-   Metz, France [!['test'](https://www.pgsentinel.com/images/twitter.png)](https://twitter.com/BertrandDrouvot) [!['test'](https://www.pgsentinel.com/images/linkedin.png)](https://www.linkedin.com/in/bdrouvot/)
+   Metz, France, [Twitter](https://twitter.com/BertrandDrouvot)
