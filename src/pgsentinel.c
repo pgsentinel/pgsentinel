@@ -1450,19 +1450,19 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 			nulls[j++] = true;
 
 		// query
-		if (AshEntryArray[i].query[0] != '\0' && !Int32GetDatum(AshEntryArray[i].blockers))
+		if (AshEntryArray[i].query[0] != '\0')
 			values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
 		else
 			nulls[j++] = true;
 
 		// cmdtype
-		if (AshEntryArray[i].cmdtype[0] != '\0' && !Int32GetDatum(AshEntryArray[i].blockers))
+		if (AshEntryArray[i].cmdtype[0] != '\0')
                         values[j++] = CStringGetTextDatum(AshEntryArray[i].cmdtype);
 		else
                         nulls[j++] = true;
 
 		// query_id
-		if (!Int32GetDatum(AshEntryArray[i].blockers))
+		if (AshEntryArray[i].queryid)
 			values[j++] = Int64GetDatum(AshEntryArray[i].queryid);
 		else
 			nulls[j++] = true;
