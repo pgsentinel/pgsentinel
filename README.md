@@ -155,6 +155,7 @@ The worker is controlled by the following GUCs:
 | pgsentinel_ash.max_entries     | int4      | Size of pg_active_session_history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
 | pgsentinel_pgssh.max_entries     | int4      | Size of pg_stat_statements_history in-memory ring buffer |            1000 | 1000 |
+| pgsentinel_pgssh.enable     | boolean      | enable pg_stat_statements_history |            false |  |
 
 Remarks for PostgreSQL 9.6
 -------------------------
