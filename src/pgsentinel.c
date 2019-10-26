@@ -27,7 +27,6 @@
 #include "utils/date.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
-#include "utils/nabstime.h"
 #include "funcapi.h"
 #include "optimizer/planner.h"
 #include "storage/shm_toc.h"
