@@ -66,7 +66,6 @@ static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
-static int pgsentinel_restart_period = 7;
 static int ash_restart_wait_time = 2;
 char *pgsentinelDbName = "postgres";
 
@@ -838,7 +837,6 @@ void
 pgsentinel_main(Datum main_arg)
 {
 
-	int j=0;
         ereport(LOG, (errmsg("starting bgworker pgsentinel")));
 
 	/* Register functions for SIGTERM/SIGHUP management */
@@ -861,18 +859,6 @@ pgsentinel_main(Datum main_arg)
 		bool gotactives;
 	        TimestampTz ash_time;
 		MemoryContext uppercxt;
-		/* 
-		 * Memory leak suspected with SPI result sets (needs investigations)
-	         * as a workaround let's restart the pgsentinel broker regularly
-		 * it does not affect it's data
-		*/
-       		if (j * ash_sampling_period > pgsentinel_restart_period * 3600 * 24) { 
-		    ereport(LOG, (errmsg("restarting the broker as it is started since %d hours",pgsentinel_restart_period)));
-		    ereport(LOG, (errmsg("then waiting %d seconds before it restarts",ash_restart_wait_time)));
-		    ereport(LOG, (errmsg("pg_active_session_history and pg_stat_statements_history data won't be lost")));
-	 	    proc_exit(1);
-		}
-		j+=1;
                 gotactives=false; 
 		ash_time=GetCurrentTimestamp();
 
@@ -1074,6 +1060,33 @@ pgsentinel_main(Datum main_arg)
 
 				/* prepare to store the entry */
 				ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue,blockersvalue,blockerpidvalue,blockerstatevalue ? blockerstatevalue : "\0");
+				if (appnamevalue != NULL) {
+				   pfree(appnamevalue);
+				}
+				if (wait_event_typevalue != NULL) {
+				   pfree(wait_event_typevalue);
+				}
+				if (wait_eventvalue != NULL) {
+				   pfree(wait_eventvalue);
+				}
+				if (statevalue != NULL) {
+				   pfree(statevalue);
+				}
+				if (blockerstatevalue != NULL) {
+				   pfree(blockerstatevalue);
+				}
+				if (client_hostnamevalue != NULL) {
+				   pfree(client_hostnamevalue);
+				}
+				if (queryvalue != NULL) {
+				   pfree(queryvalue);
+				}
+				if (backend_typevalue != NULL) {
+				   pfree(backend_typevalue);
+				}
+				if (clientaddrvalue != NULL) {
+				   pfree(clientaddrvalue);
+				}
 			}
 			MemoryContextSwitchTo(oldcxt);
 		}
@@ -1148,32 +1161,6 @@ pgsentinel_load_params(void)
 							&ash_sampling_period,
 							1,
 							1,
-							INT_MAX,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
-
-	DefineCustomIntVariable("pgsentinel.restart_period",
-							"Duration before restart (in days).",
-							NULL,
-							&pgsentinel_restart_period,
-							7,
-							7,
-							INT_MAX,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
-
-	DefineCustomIntVariable("pgsentinel_ash.restart_wait_time",
-							"time to wait once stopped before restart (in seconds).",
-							NULL,
-							&ash_restart_wait_time,
-							2,
-							2,
 							INT_MAX,
 							PGC_SIGHUP,
 							0,
