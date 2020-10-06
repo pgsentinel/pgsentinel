@@ -6,6 +6,7 @@ CREATE FUNCTION pg_active_session_history(
     OUT datid Oid,
     OUT datname text,
     OUT pid integer,
+    OUT leader_pid integer,
     OUT usesysid Oid,
     OUT usename text,
     OUT application_name text,
@@ -46,7 +47,7 @@ CREATE FUNCTION pg_stat_statements_history(
     OUT dbid Oid,
     OUT queryid bigint,
     OUT calls bigint,
-    OUT total_time double precision,
+    OUT total_exec_time double precision,
     OUT rows bigint,
     OUT shared_blks_hit bigint,
     OUT shared_blks_read bigint,
@@ -59,7 +60,12 @@ CREATE FUNCTION pg_stat_statements_history(
     OUT temp_blks_read bigint,
     OUT temp_blks_written bigint,
     OUT blk_read_time double precision,
-    OUT blk_write_time double precision
+    OUT blk_write_time double precision,
+	OUT plans bigint,
+	OUT total_plan_time double precision,
+	OUT wal_records bigint,
+	OUT wal_fpi bigint,
+	OUT wal_bytes numeric
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'pg_stat_statements_history'
@@ -70,3 +76,8 @@ CREATE VIEW pg_stat_statements_history AS
   SELECT * FROM pg_stat_statements_history();
 
 GRANT SELECT ON pg_stat_statements_history TO PUBLIC;
+
+CREATE FUNCTION get_parsedinfo(IN int, OUT pid integer, OUT queryid bigint, OUT query text,OUT cmdtype text)
+RETURNS SETOF RECORD
+AS 'MODULE_PATHNAME','get_parsedinfo'
+LANGUAGE C STRICT VOLATILE;

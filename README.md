@@ -6,7 +6,7 @@
 Introduction
 ------------
 
-PostgreSQL provides session activity. However, in order to gather activity  
+PostgreSQL provides session activity. However, in order to gather activity
 behavior user have to sample the pg_stat_activity view multiple times.
 `pgsentinel` is an extension to record active session history and also link
  the activity with query statistics (`pg_stat_statements`).
@@ -85,6 +85,7 @@ Usage
   | datid            | oid                      |           |          |  |
   | datname          | text                     |           |          |  |
   | pid              | integer                  |           |          |  |
+  | leader_pid             | integer                  |           |          |  |
   | usesysid         | oid                      |           |          |  |
   | usename          | text                     |           |          |  |
   | application_name | text                     |           |          |  |
@@ -130,7 +131,7 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 | dbid                | oid                      |           |          | |
 | queryid             | bigint                   |           |          | |
 | calls               | bigint                   |           |          | |
-| total_time          | double precision         |           |          | |
+| total_exec_time          | double precision         |           |          | |
 | rows                | bigint                   |           |          | |
 | shared_blks_hit     | bigint                   |           |          | |
 | shared_blks_read    | bigint                   |           |          | |
@@ -144,8 +145,13 @@ You could see it as samplings of `pg_stat_activity` providing more information:
 | temp_blks_written   | bigint                   |           |          | |
 | blk_read_time       | double precision         |           |          | |
 | blk_write_time      | double precision         |           |          | |
+| plans      | bigint         |           |          | |
+| total_plan_time      | double precision         |           |          | |
+| wal_records      | bigint         |           |          | |
+| wal_fpi      | bigint         |           |          | |
+| wal_bytes      | numeric         |           |          | |
 
-The fields description are the same as for `pg_stat_statements` (except for the `ash_time` one, which is the time of the active session history sampling)
+The fields description are the same as for `pg_stat_statements` (except for the `ash_time` one, which is the time of the active session history sampling).
 
 The worker is controlled by the following GUCs:
 
@@ -157,11 +163,10 @@ The worker is controlled by the following GUCs:
 | pgsentinel_pgssh.max_entries     | int4      | Size of pg_stat_statements_history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel_pgssh.enable     | boolean      | enable pg_stat_statements_history |            false |  |
 
-Remarks for PostgreSQL 9.6
+Remark
 -------------------------
 
-* The `backend_type` field does not exist into the `pg_stat_activity` view
-* The `backend_type` field exists into the `pg_active_session_history` view and is always NULL (as a consequence of the previous remark)
+* Some fields may be NULL depending on the version (for example, leader_pid is NULL for version <= 13.0...)
 
 See how to query the view in this short video
 -------------
@@ -174,10 +179,6 @@ See how to query the view in this short video
 Contribution
 ------------
 
-Please, notice, that `pgsentinel` is still in beta testing so may contain some bugs. Don't hesitate to raise
-[issues at github](https://github.com/pgsentinel/pgsentinel/issues) with
-your bug report.
-
 If you're lacking of some functionality in `pgsentinel`  
 then you're welcome to make pull requests.
 
@@ -185,4 +186,4 @@ Author
 -------
  
  * Bertrand Drouvot <bdrouvot@gmail.com>,
-   Metz, France, [Twitter](https://twitter.com/BertrandDrouvot)
+   France, [Twitter](https://twitter.com/BertrandDrouvot)

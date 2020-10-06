@@ -10,6 +10,7 @@
  * LICENSE: GNU Affero General Public License v3.0
  */
 
+#include "pgsentinel.h"
 #include "postgres.h"
 #include "fmgr.h"
 #include "access/xact.h"
@@ -34,13 +35,16 @@
 #include "parser/analyze.h"
 #include "parser/scansup.h"
 #include "access/hash.h"
+#include "commands/extension.h"
+#include "catalog/namespace.h"
 
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        27
-#define PG_STAT_STATEMENTS_HISTORY_COLS       19
+#define PG_ACTIVE_SESSION_HISTORY_COLS        28
+#define PG_STAT_STATEMENTS_HISTORY_COLS       24
+#define EXTENSION_NAME "pgsentinel"
 
 /* Entry point of library loading */
 void _PG_init(void);
@@ -53,13 +57,11 @@ static volatile sig_atomic_t got_sighup = false;
 
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
-static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 
 
 /* Our hooks */
 static void ash_shmem_startup(void);
 static void ash_shmem_shutdown(int code, Datum arg);
-static void ash_post_parse_analyze(ParseState *pstate, Query *query);
 
 /* GUC variables */
 static int ash_sampling_period = 1;
@@ -69,27 +71,70 @@ static bool pgssh_enable = false;
 static int ash_restart_wait_time = 2;
 char *pgsentinelDbName = "postgres";
 
-/* to create queryid in case of utility statements*/
-#if PG_VERSION_NUM >= 110000
-static uint64 ash_hash64_string(const char *str, int len);
-#else
-static uint32 ash_hash32_string(const char *str, int len);
-#endif
-
 /* Worker name */
 static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
 static const char * const pg_stat_activity_query=
 #if (PG_VERSION_NUM / 100 ) == 906
-"select act.datid, act.datname, act.pid, act.usesysid, act.usename, act.application_name, text(act.client_addr), act.client_hostname, act.client_port, act.backend_start, act.xact_start, act.query_start, act.state_change, case when act.wait_event_type is null then 'CPU' else act.wait_event_type end as wait_event_type,case when act.wait_event is null then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1],cardinality(pg_blocking_pids(act.pid)),blk.state from pg_stat_activity act left join pg_stat_activity blk on (pg_blocking_pids(act.pid))[1] = blk.pid  where act.state ='active' and act.pid != pg_backend_pid()";
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start, \
+ act.state_change, case when act.wait_event_type is null then 'CPU'  \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state ='active' and act.pid != pg_backend_pid()";
+#elif PG_VERSION_NUM < 130000
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start,  \
+ act.state_change, case when act.wait_event_type is null then 'CPU' \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state ='active' and act.pid != pg_backend_pid()";
 #else
-"select act.datid, act.datname, act.pid, act.usesysid, act.usename, act.application_name, text(act.client_addr), act.client_hostname, act.client_port, act.backend_start, act.xact_start, act.query_start, act.state_change, case when act.wait_event_type is null then 'CPU' else act.wait_event_type end as wait_event_type,case when act.wait_event is null then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1],cardinality(pg_blocking_pids(act.pid)),blk.state from pg_stat_activity act left join pg_stat_activity blk on (pg_blocking_pids(act.pid))[1] = blk.pid  where act.state ='active' and act.pid != pg_backend_pid()";
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start,  \
+ act.state_change, case when act.wait_event_type is null then 'CPU' \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.*, act.leader_pid \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state ='active' and act.pid != pg_backend_pid()";
 #endif
 
 /* pg_stat_statements query */
 static const char * const pg_stat_statements_query=
-"select userid, dbid, queryid, calls, total_time, rows, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, temp_blks_written, blk_read_time, blk_write_time from pg_stat_statements where queryid in  (select queryid from pg_active_session_history where ash_time in (select ash_time from pg_active_session_history order by ash_time desc limit 1))";
+#if PG_VERSION_NUM < 130000
+"select userid, dbid, queryid, calls, total_time, rows, shared_blks_hit, \
+ shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
+ local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
+ temp_blks_written, blk_read_time, blk_write_time from pg_stat_statements \
+ where queryid in  (select queryid from pg_active_session_history  \
+ where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 1))";
+#else
+"select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
+ shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
+ local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
+ temp_blks_written, blk_read_time, blk_write_time, \
+ plans, total_plan_time, wal_records, wal_fpi, wal_bytes \
+ from pg_stat_statements \
+ where queryid in  (select queryid from pg_active_session_history  \
+ where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 1))";
+#endif
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
@@ -98,11 +143,14 @@ static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
 typedef struct ashEntry
 {
 	int pid;
+#if PG_VERSION_NUM >= 130000
+	int leader_pid;
+#endif
+	int client_port;
 	uint64 queryid;
 	TimestampTz ash_time;
 	Oid datid;
 	Oid usesysid;
-	int client_port;
 	char *usename;
 	char *datname;
 	char *application_name;
@@ -148,18 +196,16 @@ typedef struct pgsshEntry
 	int64 temp_blks_written;
 	double blk_read_time;
 	double blk_write_time;
+#if PG_VERSION_NUM >= 130000
+	int64 plans;
+	double total_plan_time;
+	int64 wal_records;
+	int64 wal_fpi;
+	uint64 wal_bytes;
+#endif
 } pgsshEntry;
 
-/* Proc entry */
-typedef struct procEntry
-{
-	uint64 queryid;
-	char *query;
-	char *cmdtype;
-	int qlen;
-} procEntry;
-
-/* Int entry */
+/* counters */
 typedef struct intEntry
 {
 	int inserted;
@@ -181,7 +227,6 @@ static char *AshEntryStateBuffer = NULL;
 static char *AshEntryBlockerStateBuffer = NULL;
 static char *AshEntryClientaddrBuffer = NULL;
 static ashEntry *AshEntryArray = NULL;
-static procEntry *ProcEntryArray = NULL;
 static intEntry *IntEntryArray = NULL;
 static pgsshEntry *PgsshEntryArray = NULL;
 static char *ProcQueryBuffer = NULL;
@@ -189,164 +234,51 @@ static char *ProcCmdTypeBuffer = NULL;
 
 /* Estimate amount of shared memory needed */
 static Size ash_entry_memsize(void);
-static Size proc_entry_memsize(void);
 
-/* Search proc from backend */
-static procEntry search_procentry(int backendPid);
+/* check extension is loaded/present */
+static bool PgSentinelHasBeenLoaded(void);
 
 /* store ash entry */
-static void ash_entry_store(TimestampTz ash_time,const int pid,const char *usename, const int client_port,Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state);
+static void ash_entry_store(TimestampTz ash_time,const int pid,
+#if PG_VERSION_NUM >= 130000
+							int leader_pid,
+#endif
+							const char *usename, const int client_port,Oid datid,
+							const char *datname, const char *application_name,
+							const char *client_addr, TransactionId backend_xmin,
+							TimestampTz backend_start, TimestampTz xact_start,
+							TimestampTz query_start, TimestampTz state_change,
+							const char *wait_event_type, const char *wait_event,
+							const char *state, const char *client_hostname,
+							const char *query, const char *backend_type,
+							Oid usesysid, TransactionId backend_xid,
+							int blockers, int blockerpid,
+							const char *blocker_state, uint64 queryid,
+							const char *gpi_query, const char *cmdtype);
 
 /* prepare store ash */
-static void ash_prepare_store(TimestampTz ash_time,const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state);
-
-/* get max procs */
-static int get_max_procs_count(void);
-
-/* The procEntry */
-static procEntry
-search_procentry(int pid)
-{
-	int i;
-
-	for (i = 0; i < ProcGlobal->allProcCount; i++)
-	{
-		PGPROC  *proc = &ProcGlobal->allProcs[i];
-		if (proc != NULL && proc->pid != 0 && proc->pid == pid)
-		{
-			return ProcEntryArray[i];
-	}
-		}
-
-	ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-		errmsg("backend with pid=%d not found", pid)));
-}
-
-/* to create queryid in case of utility statements*/
-#if PG_VERSION_NUM >= 110000
-static uint64
-ash_hash64_string(const char *str, int len)
-{
-	return DatumGetUInt64(hash_any_extended((const unsigned char *) str,
-		len, 0));
-}
-#else
-static uint32
-ash_hash32_string(const char *str, int len)
-{
-	return hash_any((const unsigned char *) str, len);
-}
+static void ash_prepare_store(TimestampTz ash_time,const int pid,
+#if PG_VERSION_NUM >= 130000
+								int leader_pid,
 #endif
+								const char* usename,const int client_port,
+								Oid datid, const char *datname,
+								const char *application_name,
+								const char *client_addr,
+								TransactionId backend_xmin,
+								TimestampTz backend_start,
+								TimestampTz xact_start, TimestampTz query_start,
+								TimestampTz state_change,
+								const char *wait_event_type,
+								const char *wait_event, const char *state,
+								const char *client_hostname, const char *query,
+								const char *backend_type, Oid usesysid,
+								TransactionId backend_xid, int blockers,
+								int blockerpid, const char *blocker_state,
+								uint64 queryid, const char *gpi_query,
+								const char *cmdtype);
 
-/*
- * Calculate max processes count.
- */
-static int
-get_max_procs_count(void)
-{
-	int count = 0;
-
-	/* MyProcs, including autovacuum workers and launcher */
-	count += MaxBackends;
-	/* AuxiliaryProcs */
-	count += NUM_AUXILIARY_PROCS;
-	/* Prepared xacts */
-	count += max_prepared_xacts;
-
-	return count;
-}
-
-/* save queryid and query text */
-static void
-ash_post_parse_analyze(ParseState *pstate, Query *query)
-{
-
-	if (prev_post_parse_analyze_hook)
-		prev_post_parse_analyze_hook(pstate, query);
-
-	if (MyProc)
-	{
-		int i = MyProc - ProcGlobal->allProcs;
-		const char *querytext = pstate->p_sourcetext;
-		int minlen;
-		int query_len;
-#if PG_VERSION_NUM >= 100000
-		int query_location = query->stmt_location;
-		query_len = query->stmt_len;
-
-		if (query_location >= 0)
-		{
-			Assert(query_location <= strlen(querytext));
-			querytext += query_location;
-			/* Length of 0 (or -1) means "rest of string" */
-			if (query_len <= 0)
-				query_len = strlen(querytext);
-			else
-				Assert(query_len <= strlen(querytext));
-		}
-		else
-		{
-			/* If query location is unknown, distrust query_len as well */
-			query_location = 0;
-			query_len = strlen(querytext);
-		}
-
-		/*
-		 * Discard leading and trailing whitespace, too.  Use scanner_isspace()
-		 * not libc's isspace(), because we want to match the lexer's behavior.
-		 */
-		while (query_len > 0 && scanner_isspace(querytext[0]))
-			querytext++, query_location++, query_len--;
-		while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
-			query_len--;
-#else
-		query_len = strlen(querytext);		
-#endif		
-
-		minlen = Min(query_len,pgstat_track_activity_query_size-1);
-		memcpy(ProcEntryArray[i].query,querytext,minlen);
-		ProcEntryArray[i].qlen=minlen;
-		switch (query->commandType)
-		{
-			case CMD_SELECT:
-				ProcEntryArray[i].cmdtype="SELECT";
-				break;
-			case CMD_INSERT:
-				ProcEntryArray[i].cmdtype="INSERT";
-				break;
-			case CMD_UPDATE:
-				ProcEntryArray[i].cmdtype="UPDATE";
-				break;
-			case CMD_DELETE:
-				ProcEntryArray[i].cmdtype="DELETE";
-				break;
-			case CMD_UTILITY:
-				ProcEntryArray[i].cmdtype="UTILITY";
-				break;
-			case CMD_UNKNOWN:
-				ProcEntryArray[i].cmdtype="UNKNOWN";
-				break;
-			case CMD_NOTHING:
-				ProcEntryArray[i].cmdtype="NOTHING";
-				break;
-		}
-		/*
-		 * For utility statements, we just hash the query string to get an ID.
-		 */
-#if PG_VERSION_NUM >= 110000
-		if (query->queryId == UINT64CONST(0)) {
-			ProcEntryArray[i].queryid = ash_hash64_string(querytext, query_len);
-#else
-		if (query->queryId == 0) {
-			ProcEntryArray[i].queryid = ash_hash32_string(querytext, query_len);
-#endif
-		} else {
-			ProcEntryArray[i].queryid = query->queryId;
-		}
-	}
-}
-
-/* Estimate amount of shared memory needed for ash entry*/
+/* Estimate amount of shared memory needed for ash entry */
 static Size
 ash_entry_memsize(void)
 {
@@ -371,31 +303,18 @@ ash_entry_memsize(void)
 	/* AshEntryClientHostnameBuffer */
 	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryQueryBuffer */
-	size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
+	size = add_size(size, mul_size(pgstat_track_activity_query_size,
+															ash_max_entries));
 	/* AshEntryCmdTypeBuffer */
 	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryTopLevelQueryBuffer */
-	size = add_size(size, mul_size(pgstat_track_activity_query_size, ash_max_entries));
+	size = add_size(size, mul_size(pgstat_track_activity_query_size,
+															ash_max_entries));
 	/* AshEntryBackendTypeBuffer */
 	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 	/* AshEntryBlockerStateBuffer */
 	size = add_size(size, mul_size(NAMEDATALEN, ash_max_entries));
 
-	return size;
-}
-
-/* Estimate amount of shared memory needed for proc entry*/
-static Size
-proc_entry_memsize(void)
-{
-	Size            size;
-
-	/* ProcEntryArray */
-	size = mul_size(sizeof(procEntry), get_max_procs_count());
-	/* ProEntryQueryBuffer */
-	size = add_size(size, mul_size(pgstat_track_activity_query_size, get_max_procs_count()));
-	/* ProEntryCmdTypeBuffer */
-	size = add_size(size, mul_size(NAMEDATALEN, get_max_procs_count()));
 	return size;
 }
 
@@ -432,15 +351,15 @@ ash_shmem_startup(void)
 		ash_prev_shmem_startup_hook();
 
 	size = mul_size(sizeof(ashEntry), ash_max_entries);
-	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size, &found);
+	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size,
+																		&found);
 
 	if (!found)
-	{
 		MemSet(AshEntryArray, 0, size);
-	} 
 
 	size = mul_size(sizeof(intEntry), 1);
-	IntEntryArray = (intEntry *) ShmemInitStruct("int Entry Array", size, &found);
+	IntEntryArray = (intEntry *) ShmemInitStruct("int Entry Array", size,
+																		&found);
 
 	if (!found)
 	{
@@ -452,16 +371,16 @@ ash_shmem_startup(void)
 	if (pgssh_enable)
 	{
 		size = mul_size(sizeof(pgsshEntry), pgssh_max_entries);
-		PgsshEntryArray = (pgsshEntry *) ShmemInitStruct("pgssh Entry Array", size, &found);
+		PgsshEntryArray = (pgsshEntry *) ShmemInitStruct("pgssh Entry Array",
+																size, &found);
 
 		if (!found)
-		{
 			MemSet(PgsshEntryArray, 0, size);
-		}
 	}
 
 	size = mul_size(sizeof(procEntry), get_max_procs_count());
-	ProcEntryArray = (procEntry *) ShmemInitStruct("Proc Entry Array", size, &found);
+	ProcEntryArray = (procEntry *) ShmemInitStruct("Get_parsedinfo Proc Entry",
+																size, &found);
 
 	if (!found)
 	{
@@ -469,7 +388,8 @@ ash_shmem_startup(void)
 	}
 
 	size = mul_size(pgstat_track_activity_query_size, get_max_procs_count());
-	ProcQueryBuffer = (char *) ShmemInitStruct("Proc Query Buffer", size, &found);
+	ProcQueryBuffer = (char *) ShmemInitStruct("Proc Query Buffer", size,
+																	&found);
 
 	if (!found)
 	{
@@ -485,7 +405,8 @@ ash_shmem_startup(void)
 	}
 
 	size = mul_size(NAMEDATALEN, get_max_procs_count());
-	ProcCmdTypeBuffer = (char *) ShmemInitStruct("Proc CmdType Buffer", size, &found);
+	ProcCmdTypeBuffer = (char *) ShmemInitStruct("Proc CmdType Buffer", size,
+																		&found);
 
 	if (!found)
 	{
@@ -570,7 +491,6 @@ ash_shmem_startup(void)
 		}
 	}
 
-
 	size = mul_size(NAMEDATALEN, ash_max_entries);
 	AshEntryWaitEventTypeBuffer = (char *)
 		ShmemInitStruct("Ash Entry Wait event type Buffer", size, &found);
@@ -587,7 +507,6 @@ ash_shmem_startup(void)
 			buffer += NAMEDATALEN;
 		}
 	}
-
 
 	size = mul_size(NAMEDATALEN, ash_max_entries);
 	AshEntryWaitEventBuffer = (char *)
@@ -692,6 +611,7 @@ ash_shmem_startup(void)
 		}
 	}
 
+
 	size = mul_size(NAMEDATALEN, ash_max_entries);
 	AshEntryBackendTypeBuffer = (char *)
 		ShmemInitStruct("Ash Entry Backend Type Buffer", size, &found);
@@ -782,54 +702,104 @@ pgsentinel_sighup(SIGNAL_ARGS)
 }
 
 static void
-ash_entry_store(TimestampTz ash_time,const int pid,const char *usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr, TransactionId backend_xmin, TimestampTz backend_start, TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state)
+ash_entry_store(TimestampTz ash_time, const int pid,
+#if PG_VERSION_NUM >= 130000
+				int leader_pid,
+#endif
+				const char *usename,
+				const int client_port, Oid datid, const char *datname,
+				const char *application_name, const char *client_addr,
+				TransactionId backend_xmin, TimestampTz backend_start,
+				TimestampTz xact_start, TimestampTz query_start,
+				TimestampTz state_change, const char *wait_event_type,
+				const char *wait_event, const char *state,
+				const char *client_hostname, const char *query,
+				const char *backend_type, Oid usesysid,
+				TransactionId backend_xid, int blockers, int blockerpid,
+				const char *blocker_state, uint64 queryid,
+				const char *gpi_query, const char *cmdtype)
 {
-	procEntry newprocentry;
-	int len;
 	int inserted;
 	inserted=IntEntryArray[0].inserted-1;
-	newprocentry = search_procentry(pid);
-	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].application_name,application_name,Min(strlen(application_name)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].wait_event,wait_event,Min(strlen(wait_event)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].blocker_state,blocker_state,Min(strlen(blocker_state)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,Min(strlen(client_hostname)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].top_level_query,query,Min(strlen(query)+1,pgstat_track_activity_query_size-1));
-	memcpy(AshEntryArray[inserted].backend_type,backend_type,Min(strlen(backend_type)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].client_addr,client_addr,Min(strlen(client_addr)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,
+																NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,
+																NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].application_name,application_name,
+								Min(strlen(application_name)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,
+								Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].wait_event,wait_event,
+								Min(strlen(wait_event)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,
+																NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].blocker_state,blocker_state,
+								Min(strlen(blocker_state)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,
+								Min(strlen(client_hostname)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].top_level_query,query,
+					Min(strlen(query)+1,pgstat_track_activity_query_size-1));
+	memcpy(AshEntryArray[inserted].backend_type,backend_type,
+									Min(strlen(backend_type)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].client_addr,client_addr,
+									Min(strlen(client_addr)+1,NAMEDATALEN-1));
+	memcpy(AshEntryArray[inserted].query,gpi_query,Min(strlen(gpi_query)+1,
+										pgstat_track_activity_query_size-1));
+	memcpy(AshEntryArray[inserted].cmdtype,cmdtype,Min(strlen(cmdtype)+1,
+																NAMEDATALEN-1));
 	AshEntryArray[inserted].client_port=client_port;
 	AshEntryArray[inserted].datid=datid;
 	AshEntryArray[inserted].usesysid=usesysid;
 	AshEntryArray[inserted].pid=pid;
+#if PG_VERSION_NUM >= 130000
+	AshEntryArray[inserted].leader_pid=leader_pid;
+#endif
 	AshEntryArray[inserted].backend_xmin=backend_xmin;
 	AshEntryArray[inserted].backend_xid=backend_xid;
 	AshEntryArray[inserted].backend_start=backend_start;
 	AshEntryArray[inserted].xact_start=xact_start;
 	AshEntryArray[inserted].query_start=query_start;
 	AshEntryArray[inserted].state_change=state_change;
-	AshEntryArray[inserted].queryid=newprocentry.queryid;
-	len = Max(Min(newprocentry.qlen,pgstat_track_activity_query_size-1),1);
-	memcpy(AshEntryArray[inserted].query,newprocentry.query,len);
-	AshEntryArray[inserted].query[len]='\0';
-	strcpy(AshEntryArray[inserted].cmdtype,newprocentry.cmdtype);
 	AshEntryArray[inserted].ash_time=ash_time;
 	AshEntryArray[inserted].blockers=blockers;
 	AshEntryArray[inserted].blockerpid=blockerpid;
+	AshEntryArray[inserted].queryid=queryid;
 }
 
 static void
-ash_prepare_store(TimestampTz ash_time, const int pid, const char* usename,const int client_port, Oid datid, const char *datname, const char *application_name, const char *client_addr,TransactionId backend_xmin, TimestampTz backend_start,TimestampTz xact_start, TimestampTz query_start, TimestampTz state_change, const char *wait_event_type, const char *wait_event, const char *state, const char *client_hostname, const char *query, const char *backend_type, Oid usesysid, TransactionId backend_xid, int blockers, int blockerpid, const char *blocker_state)
+ash_prepare_store(TimestampTz ash_time, const int pid,
+#if PG_VERSION_NUM >= 130000
+					int leader_pid,
+#endif
+					const char* usename,
+					const int client_port, Oid datid, const char *datname,
+					const char *application_name, const char *client_addr,
+					TransactionId backend_xmin, TimestampTz backend_start,
+					TimestampTz xact_start, TimestampTz query_start,
+					TimestampTz state_change, const char *wait_event_type,
+					const char *wait_event, const char *state,
+					const char *client_hostname, const char *query,
+					const char *backend_type, Oid usesysid,
+					TransactionId backend_xid, int blockers, int blockerpid,
+					const char *blocker_state, uint64 queryid,
+					const char *gpi_query, const char *cmdtype)
 {
 	Assert(pid != NULL);
 
 	/* Safety check... */
 	if (!AshEntryArray) { return; }
 
-	IntEntryArray[0].inserted=(IntEntryArray[0].inserted % ash_max_entries) + 1;;
-	ash_entry_store(ash_time,pid,usename,client_port,datid, datname, application_name, client_addr,backend_xmin, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, client_hostname, query, backend_type,usesysid,backend_xid, blockers, blockerpid, blocker_state);
+	IntEntryArray[0].inserted=(IntEntryArray[0].inserted % ash_max_entries) + 1;
+	ash_entry_store(ash_time, pid,
+#if PG_VERSION_NUM >= 130000
+					leader_pid,
+#endif
+					usename, client_port, datid, datname,
+					application_name, client_addr,backend_xmin, backend_start,
+					xact_start, query_start, state_change, wait_event_type,
+					wait_event, state, client_hostname, query, backend_type,
+					usesysid, backend_xid, blockers, blockerpid, blocker_state,
+					queryid, gpi_query, cmdtype);
 }
 
 void
@@ -859,14 +829,17 @@ pgsentinel_main(Datum main_arg)
 		TimestampTz ash_time;
 		MemoryContext uppercxt;
 		gotactives=false; 
-		ash_time=GetCurrentTimestamp();
 
+letswait:
+		ash_time=GetCurrentTimestamp();
 		/* Wait necessary amount of time */
 #if PG_VERSION_NUM >= 100000
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, ash_sampling_period * 1000L,PG_WAIT_EXTENSION);
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+								ash_sampling_period * 1000L,PG_WAIT_EXTENSION);
 		ResetLatch(MyLatch);
 #else
-		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, ash_sampling_period * 1000L);
+		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT |
+							WL_POSTMASTER_DEATH, ash_sampling_period * 1000L);
 		ResetLatch(&MyProc->procLatch);
 #endif
 
@@ -891,11 +864,17 @@ pgsentinel_main(Datum main_arg)
 		}
 
 		uppercxt = CurrentMemoryContext;
-
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
-		SPI_connect();
 		PushActiveSnapshot(GetTransactionSnapshot());
+
+		if (!PgSentinelHasBeenLoaded()) {
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			goto letswait;
+		}
+
+		SPI_connect();
 		pgstat_report_activity(STATE_RUNNING, pg_stat_activity_query);
 
 		/* We can now execute queries via SPI */
@@ -904,7 +883,7 @@ pgsentinel_main(Datum main_arg)
 		if (ret != SPI_OK_SELECT)
 			elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
 
-		/* Do some processing and log stuff disconnected */
+		/* Do some processing */
 
 		if (SPI_processed > 0)
 		{
@@ -926,6 +905,9 @@ pgsentinel_main(Datum main_arg)
 				char *blockerstatevalue=NULL;
 				char *clientaddrvalue=NULL;
 				int pidvalue;
+#if PG_VERSION_NUM >= 130000
+				int leader_pidvalue;
+#endif
 				int client_portvalue;
 				int blockersvalue;
 				int blockerpidvalue;
@@ -937,152 +919,253 @@ pgsentinel_main(Datum main_arg)
 				TimestampTz xact_startvalue;
 				TimestampTz query_startvalue;
 				TimestampTz state_changevalue;
+				uint64 queryidvalue;
+				char *gpi_queryvalue = NULL;
+				char *cmdtypevalue = NULL;
 
 				/* Fetch values */
 
 				/* datid */
-				datidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
+				datidvalue = DatumGetObjectId(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
 
 				/* usesysid */
-				usesysidvalue = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
+				usesysidvalue = DatumGetObjectId(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
 
 				/* datname */
-				datnamevalue = DatumGetCString(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
+				datnamevalue = DatumGetCString(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
 
 				/* pid */
-				pidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
+				pidvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
 
 #if PG_VERSION_NUM >= 100000
 				/* blockerpid */
-				blockerpidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
+				blockerpidvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
 
 				/* blockers */
-				blockersvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull));
+				blockersvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull));
 #else
 				/* blockerpid */
-				blockerpidvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull));
+				blockerpidvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull));
 
 				/* blockers */
-				blockersvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
+				blockersvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
 #endif
 
 				/* client_port */
-				client_portvalue = DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
+				client_portvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
 
 				/* usename */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,5, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																	5, &isnull);
 				if (!isnull) {
 					usenamevalue = DatumGetCString(data);
 				}
 
 				/* appname */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,6, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																	6, &isnull);
 				if (!isnull) {
 					appnamevalue = TextDatumGetCString(data);
 				}
 
 				/* wait_event_type */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,14, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																14, &isnull);
 				if (!isnull) {
 					wait_event_typevalue = TextDatumGetCString(data);
 				}
 
 				/* wait_event */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,15, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																15, &isnull);
 				if (!isnull) {
 					wait_eventvalue = TextDatumGetCString(data);
 				}
 
 				/* state */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,16, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																16, &isnull);
 				if (!isnull) {
 					statevalue = TextDatumGetCString(data);
 				}
 
 #if PG_VERSION_NUM >= 100000
 				/* blocker state */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																23, &isnull);
 				if (!isnull) {
 					blockerstatevalue = TextDatumGetCString(data);
+				}
+
+				/* queryid */
+				queryidvalue = DatumGetUInt64(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,25, &isnull));
+
+				/* gpi query */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																26, &isnull);
+				if (!isnull) {
+					gpi_queryvalue = TextDatumGetCString(data);
+				}
+
+				/* cmdtype */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																27, &isnull);
+				if (!isnull) {
+					cmdtypevalue = TextDatumGetCString(data);
 				}
 #else
 				/* blocker state */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																22, &isnull);
 				if (!isnull) {
 					blockerstatevalue = TextDatumGetCString(data);
 				}
+
+				/* queryid */
+				queryidvalue = DatumGetUInt64(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,24, &isnull));
+
+				/* gpi query */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																25, &isnull);
+				if (!isnull) {
+					gpi_queryvalue = TextDatumGetCString(data);
+				}
+
+				/* cmdtype */
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																26, &isnull);
+				if (!isnull) {
+					cmdtypevalue = TextDatumGetCString(data);
+				}
 #endif
+
 				/* client_hostname */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																	8, &isnull);
 				if (!isnull) {
 					client_hostnamevalue = TextDatumGetCString(data);
 				}
 
 				/* query */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,19, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																19, &isnull);
 				if (!isnull) {
 					queryvalue = TextDatumGetCString(data);
 				}
 
 #if PG_VERSION_NUM >= 100000
 				/* backend_type */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																20, &isnull);
 				if (!isnull) {
 					backend_typevalue = TextDatumGetCString(data);
 				}
 #endif
+
 				/* client addr */
-				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull);
+				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
+																7, &isnull);
 				if (!isnull) {
 					clientaddrvalue = TextDatumGetCString(data);
 				}
 
 				/* backend xid */
-				backend_xidvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
+				backend_xidvalue = DatumGetTransactionId(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
 
 				/* backedn xmin */
-				backend_xminvalue = DatumGetTransactionId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
+				backend_xminvalue = DatumGetTransactionId(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
 
 				/* backend start */
-				backend_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
+				backend_startvalue = DatumGetTimestamp(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
 
 				/* xact start */
-				xact_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
+				xact_startvalue = DatumGetTimestamp(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
 
 				/* query start */
-				query_startvalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
+				query_startvalue = DatumGetTimestamp(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
 
 				/* state change */
-				state_changevalue = DatumGetTimestamp(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
+				state_changevalue = DatumGetTimestamp(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
+#if PG_VERSION_NUM >= 130000
+				/* leader pid */
+				leader_pidvalue = DatumGetInt32(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,28, &isnull));
+#endif
 
 				/* prepare to store the entry */
-				ash_prepare_store(ash_time,pidvalue,usenamevalue ? usenamevalue : "\0",client_portvalue, datidvalue, datnamevalue ? datnamevalue : "\0", appnamevalue ? appnamevalue : "\0",clientaddrvalue ? clientaddrvalue : "\0",backend_xminvalue, backend_startvalue,xact_startvalue,query_startvalue,state_changevalue, wait_event_typevalue ? wait_event_typevalue : "\0", wait_eventvalue ? wait_eventvalue : "\0", statevalue ? statevalue : "\0", client_hostnamevalue ? client_hostnamevalue : "\0",queryvalue ? queryvalue : "\0",backend_typevalue ? backend_typevalue : "\0", usesysidvalue,backend_xidvalue,blockersvalue,blockerpidvalue,blockerstatevalue ? blockerstatevalue : "\0");
+				ash_prepare_store(ash_time, pidvalue,
+#if PG_VERSION_NUM >= 130000
+									leader_pidvalue,
+#endif
+									usenamevalue ? usenamevalue : "\0",
+									client_portvalue, datidvalue,
+									datnamevalue ? datnamevalue : "\0",
+									appnamevalue ? appnamevalue : "\0",
+									clientaddrvalue ? clientaddrvalue : "\0",
+									backend_xminvalue, backend_startvalue,
+									xact_startvalue,query_startvalue,
+									state_changevalue,
+									wait_event_typevalue ? wait_event_typevalue : "\0",
+									wait_eventvalue ? wait_eventvalue : "\0",
+									statevalue ? statevalue : "\0",
+									client_hostnamevalue ? client_hostnamevalue : "\0",
+									queryvalue ? queryvalue : "\0",
+									backend_typevalue ? backend_typevalue : "\0",
+									usesysidvalue, backend_xidvalue,
+									blockersvalue, blockerpidvalue,
+									blockerstatevalue ? blockerstatevalue : "\0",
+									queryidvalue,
+									gpi_queryvalue ? gpi_queryvalue : "\0",
+									cmdtypevalue ? cmdtypevalue : "\0");
 				if (appnamevalue != NULL) {
-					pfree(appnamevalue);
+				   pfree(appnamevalue);
 				}
 				if (wait_event_typevalue != NULL) {
-					pfree(wait_event_typevalue);
+				   pfree(wait_event_typevalue);
 				}
 				if (wait_eventvalue != NULL) {
-					pfree(wait_eventvalue);
+				   pfree(wait_eventvalue);
 				}
 				if (statevalue != NULL) {
-					pfree(statevalue);
+				   pfree(statevalue);
 				}
 				if (blockerstatevalue != NULL) {
-					pfree(blockerstatevalue);
+				   pfree(blockerstatevalue);
 				}
 				if (client_hostnamevalue != NULL) {
-					pfree(client_hostnamevalue);
+				   pfree(client_hostnamevalue);
 				}
 				if (queryvalue != NULL) {
-					pfree(queryvalue);
+				   pfree(queryvalue);
 				}
 				if (backend_typevalue != NULL) {
-					pfree(backend_typevalue);
+				   pfree(backend_typevalue);
 				}
 				if (clientaddrvalue != NULL) {
-					pfree(clientaddrvalue);
+				   pfree(clientaddrvalue);
+				}
+				if (gpi_queryvalue != NULL) {
+					pfree(gpi_queryvalue);
+				}
+				if (cmdtypevalue != NULL) {
+					pfree(cmdtypevalue);
 				}
 			}
 			MemoryContextSwitchTo(oldcxt);
@@ -1109,40 +1192,48 @@ pgsentinel_main(Datum main_arg)
 			if (ret != SPI_OK_SELECT)
 				elog(FATAL, "cannot select from pg_stat_statements: error code %d", ret);
 
-		if (SPI_processed > 0)
-		{
-			MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
-			for (i = 0; i < SPI_processed; i++)
+			/* Do some processing */
+			if (SPI_processed > 0)
 			{
-				bool isnull;
-				IntEntryArray[0].pgsshinserted=(IntEntryArray[0].pgsshinserted % pgssh_max_entries) + 1;;
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].ash_time=ash_time;
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].userid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].dbid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].queryid=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].calls=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].total_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,5, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].rows=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,6, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_hit=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_dirtied=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_hit=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_dirtied=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,14, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].temp_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,15, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].temp_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,16, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].blk_read_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
-				PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].blk_write_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
+				MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
+				for (i = 0; i < SPI_processed; i++)
+				{
+					bool isnull;
+					IntEntryArray[0].pgsshinserted=(IntEntryArray[0].pgsshinserted % pgssh_max_entries) + 1;
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].ash_time=ash_time;
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].userid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].dbid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].queryid=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,3, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].calls=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,4, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].total_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,5, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].rows=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,6, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_hit=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,7, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,8, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_dirtied=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,9, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].shared_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,10, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_hit=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,11, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,12, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_dirtied=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,13, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].local_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,14, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].temp_blks_read=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,15, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].temp_blks_written=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,16, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].blk_read_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,17, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].blk_write_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,18, &isnull));
+#if PG_VERSION_NUM >= 130000
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].plans=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,19, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].total_plan_time=DatumGetFloat8(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,20, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_records=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,21, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_fpi=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull));
+					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_bytes=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull));
+#endif
+				}
+				MemoryContextSwitchTo(oldcxt);
 			}
-			MemoryContextSwitchTo(oldcxt);
-                        } 
 			SPI_finish();
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 			pgstat_report_activity(STATE_IDLE, NULL);
-			}
+		}
 	}
 	/* No problems, so clean exit */
 	proc_exit(0);
@@ -1151,6 +1242,7 @@ pgsentinel_main(Datum main_arg)
 static void
 pgsentinel_load_params(void)
 {
+
 	DefineCustomIntVariable("pgsentinel_ash.sampling_period",
 							"Duration between each pull (in seconds).",
 							NULL,
@@ -1230,9 +1322,9 @@ _PG_init(void)
 	RequestAddinShmemSpace(ash_entry_memsize());
 	RequestNamedLWLockTranche("Ash Entry Array", 1);
 
-	EmitWarningsOnPlaceholders("Proc Entry Array");
+	EmitWarningsOnPlaceholders("Get_parsedinfo Proc Entry Array");
 	RequestAddinShmemSpace(proc_entry_memsize());
-	RequestNamedLWLockTranche("Proc Entry Array", 1);
+	RequestNamedLWLockTranche("Get_parsedinfo Proc Entry Array", 1);
 
 	EmitWarningsOnPlaceholders("Int Entry Array");
 	RequestAddinShmemSpace(int_entry_memsize());
@@ -1251,12 +1343,12 @@ _PG_init(void)
 	ash_prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = ash_shmem_startup;
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
-	post_parse_analyze_hook = ash_post_parse_analyze;
+	post_parse_analyze_hook = getparsedinfo_post_parse_analyze;
 
 	/* Worker parameter and registration */
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
-	BGWORKER_BACKEND_DATABASE_CONNECTION;
+		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 #if PG_VERSION_NUM >= 100000
 	sprintf(worker.bgw_library_name, "pgsentinel");
@@ -1352,6 +1444,16 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 			values[j++] = Int32GetDatum(AshEntryArray[i].pid);
 		else
 			nulls[j++] = true;
+
+#if PG_VERSION_NUM >= 130000
+		// leader_pid
+		if (Int32GetDatum(AshEntryArray[i].leader_pid))
+			values[j++] = Int32GetDatum(AshEntryArray[i].leader_pid);
+		else
+			nulls[j++] = true;
+#else
+			nulls[j++] = true;
+#endif
 
 		// usesysid
 		if (ObjectIdGetDatum(AshEntryArray[i].usesysid))
@@ -1457,9 +1559,9 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		// cmdtype
 		if (AshEntryArray[i].cmdtype[0] != '\0')
-			values[j++] = CStringGetTextDatum(AshEntryArray[i].cmdtype);
+                        values[j++] = CStringGetTextDatum(AshEntryArray[i].cmdtype);
 		else
-			nulls[j++] = true;
+                        nulls[j++] = true;
 
 		// query_id
 		if (AshEntryArray[i].queryid)
@@ -1551,6 +1653,10 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		Datum           values[PG_STAT_STATEMENTS_HISTORY_COLS];
 		bool            nulls[PG_STAT_STATEMENTS_HISTORY_COLS];
 		int             j = 0;
+#if PG_VERSION_NUM >= 130000
+		char        buf[256];
+		Datum       wal_bytes;
+#endif
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -1668,11 +1774,51 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 			values[j++] = Float8GetDatum(PgsshEntryArray[i].blk_write_time);
 		else
 			values[j++] = 0;
+#if PG_VERSION_NUM >= 130000
+		// plans
+		if (Int64GetDatum(PgsshEntryArray[i].plans))
+			values[j++] = Int64GetDatum(PgsshEntryArray[i].plans);
+		else
+			values[j++] = 0;
 
+		// total_plan_time
+		if (Float8GetDatum(PgsshEntryArray[i].total_plan_time))
+			values[j++] = Float8GetDatum(PgsshEntryArray[i].total_plan_time);
+		else
+			values[j++] = 0;
+
+		// wal_records
+		if (Int64GetDatum(PgsshEntryArray[i].wal_records))
+			values[j++] = Int64GetDatum(PgsshEntryArray[i].wal_records);
+		else
+			values[j++] = 0;
+
+		// wal_fpi
+		if (Int64GetDatum(PgsshEntryArray[i].wal_fpi))
+			values[j++] = Int64GetDatum(PgsshEntryArray[i].wal_fpi);
+		else
+			values[j++] = 0;
+
+		// wal_bytes
+		snprintf(buf, sizeof buf, UINT64_FORMAT, PgsshEntryArray[i].wal_bytes);
+		/* Convert to numeric. */
+		wal_bytes = DirectFunctionCall3(numeric_in,
+										CStringGetDatum(buf),
+										ObjectIdGetDatum(0),
+										Int32GetDatum(-1));
+
+		values[j++] = wal_bytes;
+#else
+		nulls[j++] = true;
+		nulls[j++] = true;
+		nulls[j++] = true;
+		nulls[j++] = true;
+		nulls[j++] = true;
+#endif
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
-		}
-		/* clean up and return the tuplestore */
-		tuplestore_donestoring(tupstore);
+        }
+        /* clean up and return the tuplestore */
+        tuplestore_donestoring(tupstore);
 }
 
 Datum
@@ -1695,4 +1841,29 @@ _PG_fini(void)
 	/* Uninstall hooks. */
 	shmem_startup_hook = ash_prev_shmem_startup_hook;
 	post_parse_analyze_hook = prev_post_parse_analyze_hook;
+}
+
+static bool
+PgSentinelHasBeenLoaded(void)
+{
+	bool extensionLoaded = false;
+	bool extensionPresent = false;
+	bool extensionScriptExecuted = true;
+
+	Oid extensionOid = get_extension_oid(EXTENSION_NAME, true);
+	if (extensionOid != InvalidOid)
+		extensionPresent = true;
+
+	if (extensionPresent)
+	{
+		/* check if extension objects are still being created */
+		if (creating_extension && CurrentExtensionObject == extensionOid)
+			extensionScriptExecuted = false;
+		else if (IsBinaryUpgrade)
+			extensionScriptExecuted = false;
+	}
+
+	extensionLoaded = extensionPresent && extensionScriptExecuted;
+
+	return extensionLoaded;
 }
