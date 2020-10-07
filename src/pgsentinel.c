@@ -68,6 +68,7 @@ static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
+static bool ash_track_idle_trans = false;
 static int ash_restart_wait_time = 2;
 char *pgsentinelDbName = "postgres";
 
@@ -75,7 +76,7 @@ char *pgsentinelDbName = "postgres";
 static char *worker_name = "pgsentinel";
 
 /* pg_stat_activity query */
-static const char * const pg_stat_activity_query=
+static const char * const pgsa_query_no_track_idle=
 #if (PG_VERSION_NUM / 100 ) == 906
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
  act.application_name, text(act.client_addr), act.client_hostname, \
@@ -114,7 +115,45 @@ static const char * const pg_stat_activity_query=
  where act.state ='active' and act.pid != pg_backend_pid()";
 #endif
 
-/* pg_stat_statements query */
+static const char * const pgsa_query_track_idle=
+#if (PG_VERSION_NUM / 100 ) == 906
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start, \
+ act.state_change, case when act.wait_event_type is null then 'CPU'  \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
+#elif PG_VERSION_NUM < 130000
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start,  \
+ act.state_change, case when act.wait_event_type is null then 'CPU' \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
+#else
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start,  \
+ act.state_change, case when act.wait_event_type is null then 'CPU' \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.*, act.leader_pid \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
+#endif
+
 static const char * const pg_stat_statements_query=
 #if PG_VERSION_NUM < 130000
 "select userid, dbid, queryid, calls, total_time, rows, shared_blks_hit, \
@@ -875,10 +914,21 @@ letswait:
 		}
 
 		SPI_connect();
-		pgstat_report_activity(STATE_RUNNING, pg_stat_activity_query);
 
-		/* We can now execute queries via SPI */
-		ret = SPI_execute(pg_stat_activity_query,true, 0);
+		if (ash_track_idle_trans)
+		{
+			pgstat_report_activity(STATE_RUNNING, pgsa_query_track_idle);
+
+			/* We can now execute queries via SPI */
+			ret = SPI_execute(pgsa_query_track_idle, true, 0);
+		}
+		else
+		{
+			pgstat_report_activity(STATE_RUNNING, pgsa_query_no_track_idle);
+
+			/* We can now execute queries via SPI */
+			ret = SPI_execute(pgsa_query_no_track_idle, true, 0);
+		}
 
 		if (ret != SPI_OK_SELECT)
 			elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
@@ -1283,11 +1333,22 @@ pgsentinel_load_params(void)
 							NULL);
 
 	DefineCustomBoolVariable("pgsentinel_pgssh.enable",
-				                        "Enable pg_stat_statements_history.",
+	                        "Enable pg_stat_statements_history.",
 							NULL,
 							&pgssh_enable,
 							false,
 							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomBoolVariable("pgsentinel_ash.track_idle_trans",
+	                        "Track session in idle transaction state.",
+							NULL,
+							&ash_track_idle_trans,
+							false,
+							PGC_SIGHUP,
 							0,
 							NULL,
 							NULL,

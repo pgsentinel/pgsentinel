@@ -160,6 +160,7 @@ The worker is controlled by the following GUCs:
 | pgsentinel_ash.sampling_period     | int4      | Period for history sampling in seconds |            1 | 1 |
 | pgsentinel_ash.max_entries     | int4      | Size of pg_active_session_history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel.db_name        | char      |  database the worker should connect to          |          postgres | |
+| pgsentinel_ash.track_idle_trans     | boolean      | track session in idle in transaction state |            false |  |
 | pgsentinel_pgssh.max_entries     | int4      | Size of pg_stat_statements_history in-memory ring buffer |            1000 | 1000 |
 | pgsentinel_pgssh.enable     | boolean      | enable pg_stat_statements_history |            false |  |
 
