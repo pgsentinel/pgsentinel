@@ -22,6 +22,8 @@
 #include "utils/builtins.h"
 #include "commands/extension.h"
 #include "pgstat.h"
+#include "postmaster/autovacuum.h"
+#include "replication/walsender.h"
 
 Datum get_parsedinfo(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(get_parsedinfo);
@@ -70,9 +72,13 @@ get_max_procs_count(void)
 {
 	int count = 0;
 
-	count += MaxBackends;
+	count += MaxConnections;
+	count += autovacuum_max_workers;
+	count += max_worker_processes;
+	count += max_wal_senders;
 	count += NUM_AUXILIARY_PROCS;
 	count += max_prepared_xacts;
+	count++;
 
 	return count;
 }

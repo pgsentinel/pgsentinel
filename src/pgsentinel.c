@@ -823,8 +823,6 @@ ash_prepare_store(TimestampTz ash_time, const int pid,
 					const char *blocker_state, uint64 queryid,
 					const char *gpi_query, const char *cmdtype)
 {
-	Assert(pid != NULL);
-
 	/* Safety check... */
 	if (!AshEntryArray) { return; }
 
@@ -1319,6 +1317,19 @@ pgsentinel_load_params(void)
 							NULL,
 							NULL);
 
+	DefineCustomBoolVariable("pgsentinel_ash.track_idle_trans",
+	                        "Track session in idle transaction state.",
+							NULL,
+							&ash_track_idle_trans,
+							false,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	EmitWarningsOnPlaceholders("pgsentinel_ash");
+
 	DefineCustomIntVariable("pgsentinel_pgssh.max_entries",
 							"Maximum number of pgssh entries.",
 							NULL,
@@ -1343,16 +1354,7 @@ pgsentinel_load_params(void)
 							NULL,
 							NULL);
 
-	DefineCustomBoolVariable("pgsentinel_ash.track_idle_trans",
-	                        "Track session in idle transaction state.",
-							NULL,
-							&ash_track_idle_trans,
-							false,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
+	EmitWarningsOnPlaceholders("pgsentinel_pgssh");
 
 	DefineCustomStringVariable("pgsentinel.db_name",
 							gettext_noop("Database on which the worker connect."),
@@ -1379,21 +1381,17 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 
-	EmitWarningsOnPlaceholders("Ash Entry Array");
 	RequestAddinShmemSpace(ash_entry_memsize());
 	RequestNamedLWLockTranche("Ash Entry Array", 1);
 
-	EmitWarningsOnPlaceholders("Get_parsedinfo Proc Entry Array");
 	RequestAddinShmemSpace(proc_entry_memsize());
 	RequestNamedLWLockTranche("Get_parsedinfo Proc Entry Array", 1);
 
-	EmitWarningsOnPlaceholders("Int Entry Array");
 	RequestAddinShmemSpace(int_entry_memsize());
 	RequestNamedLWLockTranche("Int Entry Array", 1);
 
 	if (pgssh_enable)
 	{
-		EmitWarningsOnPlaceholders("Pgssh Entry Array");
 		RequestAddinShmemSpace(pgssh_entry_memsize());
 		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
 	}
