@@ -868,7 +868,6 @@ pgsentinel_main(Datum main_arg)
 		gotactives=false; 
 
 letswait:
-		ash_time=GetCurrentTimestamp();
 		/* Wait necessary amount of time */
 #if PG_VERSION_NUM >= 100000
 		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
@@ -931,6 +930,7 @@ letswait:
 		if (ret != SPI_OK_SELECT)
 			elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
 
+		ash_time=GetCurrentTimestamp();
 		/* Do some processing */
 
 		if (SPI_processed > 0)
