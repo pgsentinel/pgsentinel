@@ -13,8 +13,11 @@
 post_parse_analyze_hook_type prev_post_parse_analyze_hook;
 
 /* Our hooks */
+#if PG_VERSION_NUM < 140000
 extern void getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query);
-
+#else
+extern void getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate);
+#endif
 /* Estimate amount of shared memory needed */
 extern Size proc_entry_memsize(void);
 extern int get_max_procs_count(void);

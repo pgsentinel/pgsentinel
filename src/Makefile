@@ -1,3 +1,6 @@
+REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
+REGRESS = pgsentinel-test
+
 MODULE_big = pgsentinel
 OBJS = pgsentinel.o get_parsedinfo.o
 

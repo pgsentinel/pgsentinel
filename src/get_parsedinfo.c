@@ -84,12 +84,19 @@ get_max_procs_count(void)
 }
 
 void
+#if PG_VERSION_NUM < 140000
 getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query)
+#else
+getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+#endif
 {
 
 	if (prev_post_parse_analyze_hook)
+#if PG_VERSION_NUM < 140000
 		prev_post_parse_analyze_hook(pstate, query);
-
+#else
+		prev_post_parse_analyze_hook(pstate, query, jstate);
+#endif
 	if (MyProc)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
