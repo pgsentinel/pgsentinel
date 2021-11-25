@@ -10,7 +10,7 @@
 #endif
 
 /* Saved hook values in case of unload */
-post_parse_analyze_hook_type prev_post_parse_analyze_hook;
+extern post_parse_analyze_hook_type prev_post_parse_analyze_hook;
 
 /* Our hooks */
 #if PG_VERSION_NUM < 140000
@@ -29,6 +29,6 @@ typedef struct procEntry
         char *cmdtype;
 } procEntry;
 
-procEntry *ProcEntryArray;
+extern procEntry *ProcEntryArray;
 
 #endif

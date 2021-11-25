@@ -178,6 +178,9 @@ static const char * const pg_stat_statements_query=
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
 
+procEntry *ProcEntryArray = NULL;
+post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
+
 /* ash entry */
 typedef struct ashEntry
 {
