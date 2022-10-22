@@ -1307,6 +1307,21 @@ pgsentinel_load_params(void)
 							NULL,
 							NULL);
 
+	DefineCustomBoolVariable("pgsentinel_ash.track_idle_trans",
+	                        "Track session in idle transaction state.",
+							NULL,
+							&ash_track_idle_trans,
+							false,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	if (!process_shared_preload_libraries_in_progress)
+		return;
+
+	/* can't define PGC_POSTMASTER variable after startup */
 	DefineCustomIntVariable("pgsentinel_ash.max_entries",
 							"Maximum number of ash entries.",
 							NULL,
@@ -1315,17 +1330,6 @@ pgsentinel_load_params(void)
 							1000,
 							INT_MAX,
 							PGC_POSTMASTER,
-							0,
-							NULL,
-							NULL,
-							NULL);
-
-	DefineCustomBoolVariable("pgsentinel_ash.track_idle_trans",
-	                        "Track session in idle transaction state.",
-							NULL,
-							&ash_track_idle_trans,
-							false,
-							PGC_SIGHUP,
 							0,
 							NULL,
 							NULL,
