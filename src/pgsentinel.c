@@ -57,7 +57,10 @@ static volatile sig_atomic_t got_sighup = false;
 
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
-
+#if (PG_VERSION_NUM >= 150000)
+static shmem_request_hook_type ash_prev_shmem_request_hook = NULL;
+static void ash_shmem_request(void);
+#endif
 
 /* Our hooks */
 static void ash_shmem_startup(void);
@@ -1388,6 +1391,7 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 
+#if PG_VERSION_NUM < 150000
 	RequestAddinShmemSpace(ash_entry_memsize());
 	RequestNamedLWLockTranche("Ash Entry Array", 1);
 
@@ -1402,10 +1406,15 @@ _PG_init(void)
 		RequestAddinShmemSpace(pgssh_entry_memsize());
 		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
 	}
+#endif
 
 	/*
 	 * Install hooks.
 	 */
+#if PG_VERSION_NUM >= 150000
+	ash_prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook = ash_shmem_request;
+#endif
 	ash_prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = ash_shmem_startup;
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
@@ -1933,3 +1942,31 @@ PgSentinelHasBeenLoaded(void)
 
 	return extensionLoaded;
 }
+
+#if PG_VERSION_NUM >= 150000
+/*
+ * shmem_request hook: request additional shared resources.  We'll allocate or
+ * attach to the shared resources in ash_shmem_startup().
+ */
+static void
+ash_shmem_request(void)
+{
+    if (ash_prev_shmem_request_hook)
+		ash_prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(ash_entry_memsize());
+	RequestNamedLWLockTranche("Ash Entry Array", 1);
+
+	RequestAddinShmemSpace(proc_entry_memsize());
+	RequestNamedLWLockTranche("Get_parsedinfo Proc Entry Array", 1);
+
+	RequestAddinShmemSpace(int_entry_memsize());
+	RequestNamedLWLockTranche("Int Entry Array", 1);
+
+	if (pgssh_enable)
+	{
+		RequestAddinShmemSpace(pgssh_entry_memsize());
+		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
+	}
+}
+#endif

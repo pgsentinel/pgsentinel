@@ -147,6 +147,11 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *
 			case CMD_INSERT:
 				ProcEntryArray[i].cmdtype="INSERT";
 				break;
+#if PG_VERSION_NUM >= 150000
+			case CMD_MERGE:
+				ProcEntryArray[i].cmdtype="MERGE";
+				break;
+#endif
 			case CMD_UPDATE:
 				ProcEntryArray[i].cmdtype="UPDATE";
 				break;
