@@ -853,6 +853,7 @@ pgsentinel_main(Datum main_arg)
 
 	/* Register functions for SIGTERM/SIGHUP management */
 	pqsignal(SIGHUP, pgsentinel_sighup);
+	pqsignal(SIGINT, SIG_IGN);
 	pqsignal(SIGTERM, pgsentinel_sigterm);
 
 	/* We're now ready to receive signals */
@@ -884,6 +885,8 @@ letswait:
 							WL_POSTMASTER_DEATH, ash_sampling_period * 1000L);
 		ResetLatch(&MyProc->procLatch);
 #endif
+
+		CHECK_FOR_INTERRUPTS();
 
 		/* Emergency bailout if postmaster has died */
 		if (rc & WL_POSTMASTER_DEATH)
@@ -1384,6 +1387,9 @@ _PG_init(void)
 {
 
 	BackgroundWorker worker;
+
+	if (IsBinaryUpgrade)
+		return;
 
 	/* Add parameters */
 	pgsentinel_load_params();
