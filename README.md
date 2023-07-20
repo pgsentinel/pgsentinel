@@ -40,7 +40,7 @@ Availability
 PostgreSQL installation. It is available from
 [github](https://github.com/pgsentinel/pgsentinel)
 under the same license as
-[GNU AFFERO GENERAL PUBLIC LICENSE](https://github.com/pgsentinel/pgsentinel/blob/master/LICENSE)
+[PostgreSQL License](https://github.com/pgsentinel/pgsentinel/blob/master/LICENSE)
 and supports PostgreSQL 9.6+.
 
 Installation
