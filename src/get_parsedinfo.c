@@ -1,12 +1,13 @@
 /*
  * get_parsedinfo.c
  *
- * Copyright (c) 2018, PgSentinel
+ * Copyright (c) 2018-2023, PgSentinel
  *
  * IDENTIFICATION:
  * https://github.com/pgsentinel/pgsentinel
  *
- * LICENSE: GNU Affero General Public License v3.0
+ * This program is open source, licensed under the PostgreSQL license.
+ * For license terms, see the LICENSE file.
  */
 
 #include "postgres.h"
