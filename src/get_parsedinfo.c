@@ -109,13 +109,13 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *
 
 		if (query_location >= 0)
 		{
-			Assert(query_location <= strlen(querytext));
+			Assert(query_location <= (int) strlen(querytext));
 			querytext += query_location;
 			/* Length of 0 (or -1) means "rest of string" */
 			if (query_len <= 0)
 				query_len = strlen(querytext);
 			else
-				Assert(query_len <= strlen(querytext));
+				Assert(query_len <= (int) strlen(querytext));
 		}
 		else
 		{
@@ -133,7 +133,7 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *
 		while (query_len > 0 && scanner_isspace(querytext[query_len - 1]))
 			query_len--;
 #else
-		query_len = strlen(querytext);
+		query_len = (int) strlen(querytext);
 #endif
 
 		minlen = Min(query_len,pgstat_track_activity_query_size-1);
@@ -189,7 +189,7 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *
 Datum
 get_parsedinfo(PG_FUNCTION_ARGS)
 {
-	int i;
+	uint32 i;
 	/*procEntry *result;*/
 	ReturnSetInfo   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	    tupdesc;

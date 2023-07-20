@@ -49,7 +49,7 @@ PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 /* Entry point of library loading */
 void _PG_init(void);
 void _PG_fini(void);
-void pgsentinel_main(Datum);
+PGDLLEXPORT void pgsentinel_main(Datum);
 
 /* Signal handling */
 static volatile sig_atomic_t got_sigterm = false;
@@ -783,14 +783,14 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,
 								Min(strlen(client_hostname)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].top_level_query,query,
-					Min(strlen(query)+1,pgstat_track_activity_query_size-1));
+					Min((int) strlen(query)+1,pgstat_track_activity_query_size-1));
 	memcpy(AshEntryArray[inserted].backend_type,backend_type,
 									Min(strlen(backend_type)+1,NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].client_addr,client_addr,
 									Min(strlen(client_addr)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].query,gpi_query,Min(strlen(gpi_query)+1,
+	memcpy(AshEntryArray[inserted].query,gpi_query,Min((int) strlen(gpi_query)+1,
 										pgstat_track_activity_query_size-1));
-	memcpy(AshEntryArray[inserted].cmdtype,cmdtype,Min(strlen(cmdtype)+1,
+	memcpy(AshEntryArray[inserted].cmdtype,cmdtype,Min((int) strlen(cmdtype)+1,
 																NAMEDATALEN-1));
 	AshEntryArray[inserted].client_port=client_port;
 	AshEntryArray[inserted].datid=datid;
@@ -868,7 +868,8 @@ pgsentinel_main(Datum main_arg)
 
 	while (!got_sigterm)
 	{
-		int rc, ret, i;
+		int rc, ret;
+		uint64 i;
 		bool gotactives;
 		TimestampTz ash_time;
 		MemoryContext uppercxt;
