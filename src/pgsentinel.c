@@ -104,7 +104,7 @@ static const char * const pgsa_query_no_track_idle=
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
-#else
+#elif PG_VERSION_NUM < 160000
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
  act.application_name, text(act.client_addr), act.client_hostname, \
  act.client_port, act.backend_start, act.xact_start, act.query_start,  \
@@ -113,6 +113,19 @@ static const char * const pgsa_query_no_track_idle=
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.*, act.leader_pid \
+ from pg_stat_activity act left join pg_stat_activity blk  \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ where act.state ='active' and act.pid != pg_backend_pid()";
+#else
+"select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
+ act.application_name, text(act.client_addr), act.client_hostname, \
+ act.client_port, act.backend_start, act.xact_start, act.query_start,  \
+ act.state_change, case when act.wait_event_type is null then 'CPU' \
+ else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
+ then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
+ act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,act.query_id, \
+ gpi.query, gpi.cmdtype, act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
