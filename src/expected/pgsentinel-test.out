@@ -12,5 +12,30 @@ select count(*) > 0 AS has_data from pg_active_session_history where queryid in 
  t
 (1 row)
 
+begin;
+\! sleep 3
+commit;
+select count(*) > 0 AS has_idle_data from pg_active_session_history where state  = 'idle in transaction';
+ has_idle_data 
+---------------
+ f
+(1 row)
+
+ALTER SYSTEM SET pgsentinel_ash.track_idle_trans = true;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+begin;
+\! sleep 3
+commit;
+select count(*) > 0 AS has_idle_data from pg_active_session_history where state  = 'idle in transaction';
+ has_idle_data 
+---------------
+ t
+(1 row)
+
 DROP EXTENSION pgsentinel;
 DROP EXTENSION pg_stat_statements;
