@@ -60,12 +60,12 @@ static volatile sig_atomic_t got_sighup = false;
 static shmem_startup_hook_type ash_prev_shmem_startup_hook = NULL;
 #if (PG_VERSION_NUM >= 150000)
 static shmem_request_hook_type ash_prev_shmem_request_hook = NULL;
-static void ash_shmem_request(void);
 #endif
 
 /* Our hooks */
 static void ash_shmem_startup(void);
 static void ash_shmem_shutdown(int code, Datum arg);
+static void ash_shmem_request(void);
 
 /* GUC variables */
 static int ash_sampling_period = 1;
@@ -1426,20 +1426,7 @@ _PG_init(void)
 		return;
 
 #if PG_VERSION_NUM < 150000
-	RequestAddinShmemSpace(ash_entry_memsize());
-	RequestNamedLWLockTranche("Ash Entry Array", 1);
-
-	RequestAddinShmemSpace(proc_entry_memsize());
-	RequestNamedLWLockTranche("Get_parsedinfo Proc Entry Array", 1);
-
-	RequestAddinShmemSpace(int_entry_memsize());
-	RequestNamedLWLockTranche("Int Entry Array", 1);
-
-	if (pgssh_enable)
-	{
-		RequestAddinShmemSpace(pgssh_entry_memsize());
-		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
-	}
+	ash_shmem_request();
 #endif
 
 	/*
@@ -1977,7 +1964,6 @@ PgSentinelHasBeenLoaded(void)
 	return extensionLoaded;
 }
 
-#if PG_VERSION_NUM >= 150000
 /*
  * shmem_request hook: request additional shared resources.  We'll allocate or
  * attach to the shared resources in ash_shmem_startup().
@@ -1985,9 +1971,10 @@ PgSentinelHasBeenLoaded(void)
 static void
 ash_shmem_request(void)
 {
+#if PG_VERSION_NUM >= 150000
     if (ash_prev_shmem_request_hook)
 		ash_prev_shmem_request_hook();
-
+#endif
 	RequestAddinShmemSpace(ash_entry_memsize());
 	RequestNamedLWLockTranche("Ash Entry Array", 1);
 
@@ -2003,4 +1990,3 @@ ash_shmem_request(void)
 		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
 	}
 }
-#endif
