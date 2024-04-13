@@ -7,7 +7,7 @@ Introduction
 ------------
 
 PostgreSQL provides session activity. However, in order to gather activity
-behavior users have to sample the pg_stat_activity view multiple times.
+behavior, users have to sample the pg_stat_activity view multiple times.
 `pgsentinel` is an extension to record active session history and link
  the activity with query statistics (`pg_stat_statements`).
 
@@ -56,7 +56,7 @@ higher. Before the build and install steps, you should ensure the following:
 
 The typical installation procedure may look like:
 
-As pgsentinel uses the `pg_stat_statements` extension (officially bundled with PostgreSQL) for tracking which queries get executed in your database, add the following entries to your postgres.conf:
+As `pgsentinel` uses the `pg_stat_statements` extension (officially bundled with PostgreSQL) for tracking which queries get executed in your database, add the following entries to your postgres.conf:
 
     $ shared_preload_libraries = 'pg_stat_statements,pgsentinel'
     $ # Increase the max size of the query strings Postgres records
