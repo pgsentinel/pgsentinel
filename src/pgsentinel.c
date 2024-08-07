@@ -1692,9 +1692,6 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
 }
 
 
@@ -1913,8 +1910,6 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 #endif
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
         }
-        /* clean up and return the tuplestore */
-        tuplestore_donestoring(tupstore);
 }
 
 Datum

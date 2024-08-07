@@ -234,6 +234,5 @@ get_parsedinfo(PG_FUNCTION_ARGS)
         	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
 	}
-	tuplestore_donestoring(tupstore);
 	return (Datum) 0;
 }
