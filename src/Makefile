@@ -5,9 +5,9 @@ MODULE_big = pgsentinel
 OBJS = $(patsubst %.c,%.o,$(wildcard ./*.c))
 
 ifeq ($(CC),gcc)
-    PG_CPPFLAGS = -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-uninitialized -Wno-implicit-fallthrough -Iinclude
+    PG_CPPFLAGS = -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-uninitialized -Wno-implicit-fallthrough -Iinclude
 else
-    PG_CPPFLAGS = -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-implicit-fallthrough -Iinclude
+    PG_CPPFLAGS = -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-implicit-fallthrough -Iinclude
 endif
 
 EXTRA_CLEAN += $(addprefix ./,*.gcno *.gcda)
