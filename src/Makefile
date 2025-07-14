@@ -1,4 +1,4 @@
-REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
+REGRESS_OPTS =--temp-config=./pgsentinel.conf
 REGRESS = pgsentinel-test
 
 MODULE_big = pgsentinel
