@@ -1,4 +1,9 @@
-REGRESS_OPTS =--temp-config=./pgsentinel.conf
+ifdef DEB_BUILD_GNU_TYPE
+    REGRESS_OPTS =--temp-config=./pgsentinel.conf
+else
+    REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
+endif
+
 REGRESS = pgsentinel-test
 
 MODULE_big = pgsentinel
