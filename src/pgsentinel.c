@@ -74,7 +74,7 @@ static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
 static bool ash_track_idle_trans = false;
 static int ash_restart_wait_time = 2;
-char *pgsentinelDbName = "postgres";
+static char *pgsentinelDbName = "postgres";
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
