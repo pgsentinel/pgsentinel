@@ -29,7 +29,9 @@ CREATE FUNCTION pg_active_session_history(
     OUT backend_type text,
     OUT blockers integer,
     OUT blockerpid integer,
-    OUT blocker_state text
+    OUT blocker_state text,
+    OUT cpu_usage bigint,
+    OUT memory_usage bigint
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'pg_active_session_history'
