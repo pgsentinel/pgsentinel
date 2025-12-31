@@ -18,7 +18,7 @@ endif
 EXTRA_CLEAN += $(addprefix ./,*.gcno *.gcda)
 
 EXTENSION = pgsentinel
-DATA = pgsentinel--1.0.sql
+DATA = $(wildcard $(EXTENSION)*--*.sql)
 PGFILEDESC = "pgsentinel - active session history"
 
 LDFLAGS_SL += $(filter -lm, $(LIBS))
