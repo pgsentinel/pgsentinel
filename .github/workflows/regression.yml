@@ -1,0 +1,49 @@
+name: pgsentinel regression tests
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        pg:
+          - 18
+          - 17
+          - 16
+          - 15
+          - 14
+          - 13
+          - 12
+          - 11
+          - 10
+
+    name: PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    steps:
+
+      - name: Check out the repo
+        uses: actions/checkout@v3
+
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+
+      - name: Build and install pgsentinel
+        run: make && make install
+        working-directory: src
+
+      - name: Configure shared_preload_libraries and restart
+        run: |
+          config_file=$(psql --no-psqlrc -U postgres -Atqc 'SHOW config_file')
+          echo "shared_preload_libraries = 'pg_stat_statements,pgsentinel'" >> "$config_file"
+          echo "pgsentinel.db_name = 'contrib_regression'" >> "$config_file"
+          pg_ctlcluster ${{ matrix.pg }} test restart
+
+      - name: Run regression tests
+        run: make installcheck
+        working-directory: src
+        env:
+          DEB_BUILD_GNU_TYPE: 1
+
+      - name: Show regression.diffs
+        if: ${{ failure() }}
+        run: cat src/regression.diffs || true
