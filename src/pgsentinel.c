@@ -38,6 +38,17 @@
 #include "access/hash.h"
 #include "commands/extension.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_authid.h"
+#include "utils/acl.h"
+
+/* Handle privilege checking across PostgreSQL versions */
+#if PG_VERSION_NUM >= 150000
+	#define IS_ALLOWED_ROLE(userid) has_privs_of_role(userid, ROLE_PG_READ_ALL_STATS)
+#elif PG_VERSION_NUM >= 140000
+	#define IS_ALLOWED_ROLE(userid) is_member_of_role(userid, ROLE_PG_READ_ALL_STATS)
+#else
+	#define IS_ALLOWED_ROLE(userid) is_member_of_role(userid, DEFAULT_ROLE_READ_ALL_STATS)
+#endif
 
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
@@ -1475,6 +1486,8 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int i;
+	Oid         userid = GetUserId();
+	bool        is_allowed_role = IS_ALLOWED_ROLE(userid);
 
 	/* Entry array must exist already */
 	if (!AshEntryArray)
@@ -1513,6 +1526,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
 		bool            nulls[PG_ACTIVE_SESSION_HISTORY_COLS];
 		int                     j = 0;
+		bool            show_text;
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -1641,17 +1655,33 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// top_level_query
-		if (AshEntryArray[i].top_level_query[0] != '\0')
-			values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
-		else
-			nulls[j++] = true;
+		show_text = is_allowed_role || AshEntryArray[i].usesysid == userid;
 
-		// query
-		if (AshEntryArray[i].query[0] != '\0')
-			values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
+		// top_level_query - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].top_level_query[0] != '\0')
+				values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
+			else
+				nulls[j++] = true;
+		}
 		else
-			nulls[j++] = true;
+		{
+			values[j++] = CStringGetTextDatum("<insufficient privilege>");
+		}
+
+		// query - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].query[0] != '\0')
+				values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
+			else
+				nulls[j++] = true;
+		}
+		else
+		{
+			values[j++] = CStringGetTextDatum("<insufficient privilege>");
+		}
 
 		// cmdtype
 		if (AshEntryArray[i].cmdtype[0] != '\0')
@@ -1659,11 +1689,18 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
                         nulls[j++] = true;
 
-		// query_id
-		if (AshEntryArray[i].queryid)
-			values[j++] = Int64GetDatum(AshEntryArray[i].queryid);
+		// query_id - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].queryid)
+				values[j++] = Int64GetDatum(AshEntryArray[i].queryid);
+			else
+				nulls[j++] = true;
+		}
 		else
+		{
 			nulls[j++] = true;
+		}
 
 
 		// backend_type
@@ -1704,6 +1741,8 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int i;
+	Oid         userid = GetUserId();
+	bool        is_allowed_role = IS_ALLOWED_ROLE(userid);
 
 	if (!pgssh_enable)
 		ereport(ERROR,
@@ -1746,6 +1785,7 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		Datum           values[PG_STAT_STATEMENTS_HISTORY_COLS];
 		bool            nulls[PG_STAT_STATEMENTS_HISTORY_COLS];
 		int             j = 0;
+		bool            show_text;
 #if PG_VERSION_NUM >= 130000
 		char        buf[256];
 		Datum       wal_bytes;
@@ -1772,11 +1812,20 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// query_id
-		if (Int64GetDatum(PgsshEntryArray[i].queryid))
-			values[j++] = Int64GetDatum(PgsshEntryArray[i].queryid);
+		show_text = is_allowed_role || PgsshEntryArray[i].userid == userid;
+
+		// query_id - apply privilege check
+		if (show_text)
+		{
+			if (Int64GetDatum(PgsshEntryArray[i].queryid))
+				values[j++] = Int64GetDatum(PgsshEntryArray[i].queryid);
+			else
+				nulls[j++] = true;
+		}
 		else
+		{
 			nulls[j++] = true;
+		}
 
 		// calls
 		if (Int64GetDatum(PgsshEntryArray[i].calls))
