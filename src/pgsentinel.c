@@ -886,6 +886,8 @@ ash_prepare_store(TimestampTz ash_time, const int pid,
 void
 pgsentinel_main(Datum main_arg)
 {
+	MemoryContext pgsentinel_loop_context;
+	MemoryContext saved_context;
 
 	ereport(LOG, (errmsg("starting bgworker pgsentinel")));
 
@@ -904,13 +906,18 @@ pgsentinel_main(Datum main_arg)
 	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
 #endif
 
+	pgsentinel_loop_context = AllocSetContextCreate(TopMemoryContext,
+													"pgsentinel loop context",
+													ALLOCSET_DEFAULT_SIZES);
+
+	saved_context = MemoryContextSwitchTo(pgsentinel_loop_context);
+
 	while (!got_sigterm)
 	{
 		int rc, ret;
 		uint64 i;
 		bool gotactives;
 		TimestampTz ash_time;
-		MemoryContext uppercxt;
 		gotactives=false; 
 
 letswait:
@@ -947,7 +954,6 @@ letswait:
 			proc_exit(0);
 		}
 
-		uppercxt = CurrentMemoryContext;
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -955,6 +961,7 @@ letswait:
 		if (!PgSentinelHasBeenLoaded()) {
 			PopActiveSnapshot();
 			CommitTransactionCommand();
+			MemoryContextReset(pgsentinel_loop_context);
 			goto letswait;
 		}
 
@@ -983,7 +990,6 @@ letswait:
 
 		if (SPI_processed > 0)
 		{
-			MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
 			gotactives=true;
 			for (i = 0; i < SPI_processed; i++)
 			{
@@ -1230,41 +1236,7 @@ letswait:
 									queryidvalue,
 									gpi_queryvalue ? gpi_queryvalue : "\0",
 									cmdtypevalue ? cmdtypevalue : "\0");
-				if (appnamevalue != NULL) {
-				   pfree(appnamevalue);
-				}
-				if (wait_event_typevalue != NULL) {
-				   pfree(wait_event_typevalue);
-				}
-				if (wait_eventvalue != NULL) {
-				   pfree(wait_eventvalue);
-				}
-				if (statevalue != NULL) {
-				   pfree(statevalue);
-				}
-				if (blockerstatevalue != NULL) {
-				   pfree(blockerstatevalue);
-				}
-				if (client_hostnamevalue != NULL) {
-				   pfree(client_hostnamevalue);
-				}
-				if (queryvalue != NULL) {
-				   pfree(queryvalue);
-				}
-				if (backend_typevalue != NULL) {
-				   pfree(backend_typevalue);
-				}
-				if (clientaddrvalue != NULL) {
-				   pfree(clientaddrvalue);
-				}
-				if (gpi_queryvalue != NULL) {
-					pfree(gpi_queryvalue);
-				}
-				if (cmdtypevalue != NULL) {
-					pfree(cmdtypevalue);
-				}
 			}
-			MemoryContextSwitchTo(oldcxt);
 		}
 		SPI_finish();
 		PopActiveSnapshot();
@@ -1274,8 +1246,6 @@ letswait:
 		/* pg_stat_statement_history */
 		if (gotactives && pgssh_enable) 
 		{
-			uppercxt = CurrentMemoryContext;
-
 			SetCurrentStatementStartTimestamp();
 			StartTransactionCommand();
 			SPI_connect();
@@ -1291,7 +1261,6 @@ letswait:
 			/* Do some processing */
 			if (SPI_processed > 0)
 			{
-				MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
 				for (i = 0; i < SPI_processed; i++)
 				{
 					bool isnull;
@@ -1323,15 +1292,16 @@ letswait:
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_bytes=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull));
 #endif
 				}
-				MemoryContextSwitchTo(oldcxt);
 			}
 			SPI_finish();
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 			pgstat_report_activity(STATE_IDLE, NULL);
 		}
+		MemoryContextReset(pgsentinel_loop_context);
 	}
 	/* No problems, so clean exit */
+	MemoryContextSwitchTo(saved_context);
 	proc_exit(0);
 }
 
