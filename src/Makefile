@@ -1,4 +1,9 @@
-REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
+ifdef DEB_BUILD_GNU_TYPE
+    REGRESS_OPTS =--temp-config=./pgsentinel.conf
+else
+    REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
+endif
+
 REGRESS = pgsentinel-test
 
 MODULE_big = pgsentinel
@@ -13,7 +18,7 @@ endif
 EXTRA_CLEAN += $(addprefix ./,*.gcno *.gcda)
 
 EXTENSION = pgsentinel
-DATA = pgsentinel--1.0.sql
+DATA = $(wildcard $(EXTENSION)*--*.sql)
 PGFILEDESC = "pgsentinel - active session history"
 
 LDFLAGS_SL += $(filter -lm, $(LIBS))

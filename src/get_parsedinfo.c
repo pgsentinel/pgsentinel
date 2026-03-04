@@ -1,7 +1,7 @@
 /*
  * get_parsedinfo.c
  *
- * Copyright (c) 2018-2023, PgSentinel
+ * Copyright (c) 2018-2026, PgSentinel
  *
  * IDENTIFICATION:
  * https://github.com/pgsentinel/pgsentinel

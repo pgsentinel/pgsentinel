@@ -18,5 +18,16 @@ commit;
 
 select count(*) > 0 AS has_idle_data from pg_active_session_history where state  = 'idle in transaction';
 
+-- Test privilege check
+CREATE ROLE test_unprivileged LOGIN;
+
+-- Check that unprivileged user sees redacted data for superuser's queries
+SET ROLE test_unprivileged;
+SELECT bool_or(query = '<insufficient privilege>') AS has_redacted_queries
+FROM pg_active_session_history;
+RESET ROLE;
+
+DROP ROLE test_unprivileged;
+
 DROP EXTENSION pgsentinel;
 DROP EXTENSION pg_stat_statements;

@@ -2,7 +2,7 @@
  * pgsentinel.c
  *   Track active session history.
  *
- * Copyright (c) 2018-2023, PgSentinel
+ * Copyright (c) 2018-2026, PgSentinel
  *
  * IDENTIFICATION:
  * https://github.com/pgsentinel/pgsentinel
@@ -41,6 +41,17 @@
 #include <stdio.h>  // add by robin 20250522
 #include <unistd.h> // add by robin 20250522
 #include <string.h> // add by robin 20250522
+#include "catalog/pg_authid.h"
+#include "utils/acl.h"
+
+/* Handle privilege checking across PostgreSQL versions */
+#if PG_VERSION_NUM >= 150000
+	#define IS_ALLOWED_ROLE(userid) has_privs_of_role(userid, ROLE_PG_READ_ALL_STATS)
+#elif PG_VERSION_NUM >= 140000
+	#define IS_ALLOWED_ROLE(userid) is_member_of_role(userid, ROLE_PG_READ_ALL_STATS)
+#else
+	#define IS_ALLOWED_ROLE(userid) is_member_of_role(userid, DEFAULT_ROLE_READ_ALL_STATS)
+#endif
 
 PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
@@ -81,7 +92,7 @@ static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
 static bool ash_track_idle_trans = false;
 static int ash_restart_wait_time = 2;
-char *pgsentinelDbName = "postgres";
+static char *pgsentinelDbName = "postgres";
 
 /* Worker name */
 static char *worker_name = "pgsentinel";
@@ -882,6 +893,8 @@ ash_prepare_store(TimestampTz ash_time, const int pid,
 void
 pgsentinel_main(Datum main_arg)
 {
+	MemoryContext pgsentinel_loop_context;
+	MemoryContext saved_context;
 
 	ereport(LOG, (errmsg("starting bgworker pgsentinel")));
 
@@ -900,13 +913,18 @@ pgsentinel_main(Datum main_arg)
 	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
 #endif
 
+	pgsentinel_loop_context = AllocSetContextCreate(TopMemoryContext,
+													"pgsentinel loop context",
+													ALLOCSET_DEFAULT_SIZES);
+
+	saved_context = MemoryContextSwitchTo(pgsentinel_loop_context);
+
 	while (!got_sigterm)
 	{
 		int rc, ret;
 		uint64 i;
 		bool gotactives;
 		TimestampTz ash_time;
-		MemoryContext uppercxt;
 		gotactives=false; 
 
 letswait:
@@ -943,7 +961,6 @@ letswait:
 			proc_exit(0);
 		}
 
-		uppercxt = CurrentMemoryContext;
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -951,6 +968,7 @@ letswait:
 		if (!PgSentinelHasBeenLoaded()) {
 			PopActiveSnapshot();
 			CommitTransactionCommand();
+			MemoryContextReset(pgsentinel_loop_context);
 			goto letswait;
 		}
 
@@ -979,7 +997,6 @@ letswait:
 
 		if (SPI_processed > 0)
 		{
-			MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
 			gotactives=true;
 			for (i = 0; i < SPI_processed; i++)
 			{
@@ -1226,41 +1243,7 @@ letswait:
 									queryidvalue,
 									gpi_queryvalue ? gpi_queryvalue : "\0",
 									cmdtypevalue ? cmdtypevalue : "\0");
-				if (appnamevalue != NULL) {
-				   pfree(appnamevalue);
-				}
-				if (wait_event_typevalue != NULL) {
-				   pfree(wait_event_typevalue);
-				}
-				if (wait_eventvalue != NULL) {
-				   pfree(wait_eventvalue);
-				}
-				if (statevalue != NULL) {
-				   pfree(statevalue);
-				}
-				if (blockerstatevalue != NULL) {
-				   pfree(blockerstatevalue);
-				}
-				if (client_hostnamevalue != NULL) {
-				   pfree(client_hostnamevalue);
-				}
-				if (queryvalue != NULL) {
-				   pfree(queryvalue);
-				}
-				if (backend_typevalue != NULL) {
-				   pfree(backend_typevalue);
-				}
-				if (clientaddrvalue != NULL) {
-				   pfree(clientaddrvalue);
-				}
-				if (gpi_queryvalue != NULL) {
-					pfree(gpi_queryvalue);
-				}
-				if (cmdtypevalue != NULL) {
-					pfree(cmdtypevalue);
-				}
 			}
-			MemoryContextSwitchTo(oldcxt);
 		}
 		SPI_finish();
 		PopActiveSnapshot();
@@ -1270,8 +1253,6 @@ letswait:
 		/* pg_stat_statement_history */
 		if (gotactives && pgssh_enable) 
 		{
-			uppercxt = CurrentMemoryContext;
-
 			SetCurrentStatementStartTimestamp();
 			StartTransactionCommand();
 			SPI_connect();
@@ -1287,7 +1268,6 @@ letswait:
 			/* Do some processing */
 			if (SPI_processed > 0)
 			{
-				MemoryContext oldcxt = MemoryContextSwitchTo(uppercxt);
 				for (i = 0; i < SPI_processed; i++)
 				{
 					bool isnull;
@@ -1319,15 +1299,16 @@ letswait:
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_bytes=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull));
 #endif
 				}
-				MemoryContextSwitchTo(oldcxt);
 			}
 			SPI_finish();
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 			pgstat_report_activity(STATE_IDLE, NULL);
 		}
+		MemoryContextReset(pgsentinel_loop_context);
 	}
 	/* No problems, so clean exit */
+	MemoryContextSwitchTo(saved_context);
 	proc_exit(0);
 }
 
@@ -1482,6 +1463,8 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int i;
+	Oid         userid = GetUserId();
+	bool        is_allowed_role = IS_ALLOWED_ROLE(userid);
 
 	/* Entry array must exist already */
 	if (!AshEntryArray)
@@ -1520,6 +1503,7 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		Datum           values[PG_ACTIVE_SESSION_HISTORY_COLS];
 		bool            nulls[PG_ACTIVE_SESSION_HISTORY_COLS];
 		int                     j = 0;
+		bool            show_text;
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -1648,17 +1632,33 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// top_level_query
-		if (AshEntryArray[i].top_level_query[0] != '\0')
-			values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
-		else
-			nulls[j++] = true;
+		show_text = is_allowed_role || AshEntryArray[i].usesysid == userid;
 
-		// query
-		if (AshEntryArray[i].query[0] != '\0')
-			values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
+		// top_level_query - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].top_level_query[0] != '\0')
+				values[j++] = CStringGetTextDatum(AshEntryArray[i].top_level_query);
+			else
+				nulls[j++] = true;
+		}
 		else
-			nulls[j++] = true;
+		{
+			values[j++] = CStringGetTextDatum("<insufficient privilege>");
+		}
+
+		// query - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].query[0] != '\0')
+				values[j++] = CStringGetTextDatum(AshEntryArray[i].query);
+			else
+				nulls[j++] = true;
+		}
+		else
+		{
+			values[j++] = CStringGetTextDatum("<insufficient privilege>");
+		}
 
 		// cmdtype
 		if (AshEntryArray[i].cmdtype[0] != '\0')
@@ -1666,11 +1666,18 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
                         nulls[j++] = true;
 
-		// query_id
-		if (AshEntryArray[i].queryid)
-			values[j++] = Int64GetDatum(AshEntryArray[i].queryid);
+		// query_id - apply privilege check
+		if (show_text)
+		{
+			if (AshEntryArray[i].queryid)
+				values[j++] = Int64GetDatum(AshEntryArray[i].queryid);
+			else
+				nulls[j++] = true;
+		}
 		else
+		{
 			nulls[j++] = true;
+		}
 
 
 		// backend_type
@@ -1721,6 +1728,8 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int i;
+	Oid         userid = GetUserId();
+	bool        is_allowed_role = IS_ALLOWED_ROLE(userid);
 
 	if (!pgssh_enable)
 		ereport(ERROR,
@@ -1763,6 +1772,7 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		Datum           values[PG_STAT_STATEMENTS_HISTORY_COLS];
 		bool            nulls[PG_STAT_STATEMENTS_HISTORY_COLS];
 		int             j = 0;
+		bool            show_text;
 #if PG_VERSION_NUM >= 130000
 		char        buf[256];
 		Datum       wal_bytes;
@@ -1789,11 +1799,20 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
-		// query_id
-		if (Int64GetDatum(PgsshEntryArray[i].queryid))
-			values[j++] = Int64GetDatum(PgsshEntryArray[i].queryid);
+		show_text = is_allowed_role || PgsshEntryArray[i].userid == userid;
+
+		// query_id - apply privilege check
+		if (show_text)
+		{
+			if (Int64GetDatum(PgsshEntryArray[i].queryid))
+				values[j++] = Int64GetDatum(PgsshEntryArray[i].queryid);
+			else
+				nulls[j++] = true;
+		}
 		else
+		{
 			nulls[j++] = true;
+		}
 
 		// calls
 		if (Int64GetDatum(PgsshEntryArray[i].calls))
