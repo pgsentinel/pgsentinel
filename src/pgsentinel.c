@@ -204,11 +204,21 @@ static const char * const pg_stat_statements_query=
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
  order by ash_time desc limit 1))";
-#else
+#elif PG_VERSION_NUM < 170000
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
  shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
  local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
  temp_blks_written, blk_read_time, blk_write_time, \
+ plans, total_plan_time, wal_records, wal_fpi, wal_bytes \
+ from pg_stat_statements \
+ where queryid in  (select queryid from pg_active_session_history  \
+ where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 1))";
+#else
+"select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
+ shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
+ local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
+ temp_blks_written, shared_blk_read_time, shared_blk_write_time, \
  plans, total_plan_time, wal_records, wal_fpi, wal_bytes \
  from pg_stat_statements \
  where queryid in  (select queryid from pg_active_session_history  \
