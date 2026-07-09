@@ -29,6 +29,7 @@
 #include "utils/date.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 #include "funcapi.h"
 #include "optimizer/planner.h"
 #include "storage/shm_toc.h"
@@ -903,7 +904,11 @@ pgsentinel_main(Datum main_arg)
 
 	/* Register functions for SIGTERM/SIGHUP management */
 	pqsignal(SIGHUP, pgsentinel_sighup);
+#if PG_VERSION_NUM >= 190000
+	pqsignal(SIGINT, PG_SIG_IGN);
+#else
 	pqsignal(SIGINT, SIG_IGN);
+#endif
 	pqsignal(SIGTERM, pgsentinel_sigterm);
 
 	/* We're now ready to receive signals */
