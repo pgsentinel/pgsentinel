@@ -29,6 +29,7 @@
 #include "utils/date.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 #include "funcapi.h"
 #include "optimizer/planner.h"
 #include "storage/shm_toc.h"
@@ -794,6 +795,18 @@ pgsentinel_sighup(SIGNAL_ARGS)
 	errno = save_errno;
 }
 
+/*
+ * On PG19, pqsignal()'s handler type (pqsigfunc) gained an extra
+ * "const pg_signal_info *" argument, which the SIG_IGN macro is not
+ * typed to accept. Use an explicit no-op handler instead of SIG_IGN
+ * so the function pointer types match on all supported versions.
+ */
+static void
+pgsentinel_sigint(SIGNAL_ARGS)
+{
+	/* Ignore SIGINT. */
+}
+
 static void
 ash_entry_store(TimestampTz ash_time, const int pid,
 #if PG_VERSION_NUM >= 130000
@@ -903,7 +916,7 @@ pgsentinel_main(Datum main_arg)
 
 	/* Register functions for SIGTERM/SIGHUP management */
 	pqsignal(SIGHUP, pgsentinel_sighup);
-	pqsignal(SIGINT, SIG_IGN);
+	pqsignal(SIGINT, pgsentinel_sigint);
 	pqsignal(SIGTERM, pgsentinel_sigterm);
 
 	/* We're now ready to receive signals */
