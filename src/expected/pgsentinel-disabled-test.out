@@ -1,0 +1,18 @@
+CREATE EXTENSION pg_stat_statements;
+CREATE EXTENSION pgsentinel;
+select pg_sleep(3);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select count(*) > 0 AS has_data from pg_active_session_history where queryid in (select queryid from pg_stat_statements);
+ has_data 
+----------
+ t
+(1 row)
+
+select count(*) > 0 AS has_pgssh_data from pg_stat_statements_history;
+ERROR:  pg_stat_statements_history not enabled, set pgsentinel_pgssh.enable
+DROP EXTENSION pgsentinel;
+DROP EXTENSION pg_stat_statements;
