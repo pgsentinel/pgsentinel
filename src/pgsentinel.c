@@ -204,7 +204,7 @@ static const char * const pg_stat_statements_query=
  temp_blks_written, blk_read_time, blk_write_time from pg_stat_statements \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
- order by ash_time desc limit 1))";
+ order by ash_time desc limit 2))";
 #elif PG_VERSION_NUM < 170000
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
  shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
@@ -214,7 +214,7 @@ static const char * const pg_stat_statements_query=
  from pg_stat_statements \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
- order by ash_time desc limit 1))";
+ order by ash_time desc limit 2))";
 #else
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
  shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
@@ -224,7 +224,7 @@ static const char * const pg_stat_statements_query=
  from pg_stat_statements \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
- order by ash_time desc limit 1))";
+ order by ash_time desc limit 2))";
 #endif
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
@@ -899,6 +899,7 @@ pgsentinel_main(Datum main_arg)
 {
 	MemoryContext pgsentinel_loop_context;
 	MemoryContext saved_context;
+	bool collect_pgssh_on_idle = false;
 
 	ereport(LOG, (errmsg("starting bgworker pgsentinel")));
 
@@ -932,6 +933,7 @@ pgsentinel_main(Datum main_arg)
 		int rc, ret;
 		uint64 i;
 		bool gotactives;
+		bool collect_pgssh;
 		TimestampTz ash_time;
 		gotactives=false; 
 
@@ -1259,7 +1261,11 @@ letswait:
 		pgstat_report_activity(STATE_IDLE, NULL);
 
 		/* pg_stat_statement_history */
-		if (gotactives && pgssh_enable) 
+		collect_pgssh = gotactives || collect_pgssh_on_idle;
+		/* Remember active sessions so pg_stat_statement_history is collected once on the following idle cycle. */
+		collect_pgssh_on_idle = gotactives;
+
+		if (collect_pgssh && pgssh_enable) 
 		{
 			SetCurrentStatementStartTimestamp();
 			StartTransactionCommand();
