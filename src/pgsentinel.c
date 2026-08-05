@@ -921,6 +921,11 @@ pgsentinel_main(Datum main_arg)
 	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
 #endif
 
+#if PG_VERSION_NUM >= 150000
+	SetConfigOption("stats_fetch_consistency", "none",
+					PGC_USERSET, PGC_S_SESSION);
+#endif
+
 	pgsentinel_loop_context = AllocSetContextCreate(TopMemoryContext,
 													"pgsentinel loop context",
 													ALLOCSET_DEFAULT_SIZES);
