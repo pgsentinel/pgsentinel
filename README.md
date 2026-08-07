@@ -104,6 +104,7 @@ Usage
   | query            | text                     |           |          |  |
   | cmdtype          | text                     |           |          |  |
   | queryid          | bigint                   |           |          |  |
+  | nested_queryid   | bigint                   |           |          |  |
   | backend_type     | text                     |           |          |  |
   | blockers         | integer                  |           |          |  |
   | blockerpid       | integer                  |           |          |  |
@@ -112,13 +113,16 @@ Usage
 You can see it as samplings of `pg_stat_activity` providing more information:
 
 * `ash_time`: the sampling time
-* `top_level_query`: the top level statement (in case PL/pgSQL is used)
-* `query`: the statement being executed (not normalised, as it is in `pg_stat_statements`, which means you see parameter values)
+* `top_level_query`: the top-level statement from `pg_stat_activity.query` (in case PL/pgSQL is used)
+* `query`: the statement currently being executed, from `get_parsedinfo()` (not normalised, so parameter values are visible)
 * `cmdtype`: the statement type (SELECT,UPDATE,INSERT,DELETE,UTILITY,UNKNOWN,NOTHING)
-* `queryid`: the queryid of the statement which links to pg_stat_statements
+* `queryid`: the top-level query ID from `pg_stat_activity.query_id`[^1], which links to `pg_stat_statements`
+* `nested_queryid`: the query ID returned by `get_parsedinfo()` for the statement currently being executed
 * `blockers`: the number of blockers
 * `blockerpid`: the pid of the blocker (if blockers = 1), the pid of one blocker (if blockers > 1)
 * `blocker_state`: state of the blocker (state of the blockerpid) 
+
+[^1]: Before PostgreSQL 16, `queryid` also comes from `get_parsedinfo()` and therefore matches `nested_queryid`.
 
 `pgsentinel` also reports query statistics history through the `pg_stat_statements_history` view:
 
