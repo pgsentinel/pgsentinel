@@ -24,6 +24,56 @@ select count(*) > 0 AS has_pgssh_data from pg_stat_statements_history;
  t
 (1 row)
 
+select 'test2' test2, pg_sleep(3);
+ test2 | pg_sleep 
+-------+----------
+ test2 | 
+(1 row)
+
+select 'test2' test2, pg_sleep(3);
+ test2 | pg_sleep 
+-------+----------
+ test2 | 
+(1 row)
+
+-- Elicit a few seconds where pgsentinel collection is idle.
+\! sleep 2
+-- Exercise pgssh's limit 2 path when the query disappears from ASH while collection is not idle.
+with ash as (
+	select queryid, max(ash_time) as max_ash_time
+	from pg_active_session_history
+	where query like 'select pg_sleep(3)%'
+	group by queryid
+), pgssh as (
+	select queryid, max(ash_time) as max_ash_time
+	from pg_stat_statements_history
+	group by queryid
+)
+select pgssh.max_ash_time > ash.max_ash_time as pgssh_after_ash
+from ash join pgssh using (queryid);
+ pgssh_after_ash 
+-----------------
+ t
+(1 row)
+
+-- Exercise pgssh's collect_pgssh_on_idle path when the query disappears from ASH while collection is idle.
+with ash as (
+	select queryid, max(ash_time) as max_ash_time
+	from pg_active_session_history
+	where query like 'select ''test2'' test2, pg_sleep(3)%'
+	group by queryid
+), pgssh as (
+	select queryid, max(ash_time) as max_ash_time
+	from pg_stat_statements_history
+	group by queryid
+)
+select pgssh.max_ash_time > ash.max_ash_time as pgssh_after_ash
+from ash join pgssh using (queryid);
+ pgssh_after_ash 
+-----------------
+ t
+(1 row)
+
 begin;
 \! sleep 3
 commit;
