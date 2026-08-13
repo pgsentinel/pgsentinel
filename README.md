@@ -1,7 +1,7 @@
 `pgsentinel` – sampling active session history
 =============================================================
 
-[![Build Status](https://travis-ci.org/pgsentinel/pgsentinel.svg?branch=master)](https://travis-ci.org/pgsentinel/pgsentinel)
+[![Build Status](https://github.com/pgsentinel/pgsentinel/actions/workflows/regression.yml/badge.svg)](https://github.com/pgsentinel/pgsentinel/actions/workflows/regression.yml)
 
 Introduction
 ------------
