@@ -25,6 +25,7 @@
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "replication/walsender.h"
+#include "utils/tuplestore.h"
 
 Datum get_parsedinfo(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(get_parsedinfo);
@@ -87,8 +88,10 @@ get_max_procs_count(void)
 void
 #if PG_VERSION_NUM < 140000
 getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query)
-#else
+#elif PG_VERSION_NUM < 190000
 getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+#else
+getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate)
 #endif
 {
 
