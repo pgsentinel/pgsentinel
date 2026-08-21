@@ -58,7 +58,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        30  // add by robin 20250522
+#define PG_ACTIVE_SESSION_HISTORY_COLS        31  // add by robin 20250522
 #define PG_STAT_STATEMENTS_HISTORY_COLS       24
 #define EXTENSION_NAME "pgsentinel"
 
@@ -69,7 +69,8 @@ PGDLLEXPORT void pgsentinel_main(Datum);
 
 /* Function declarations  add by robin 20250522 */
 static unsigned long get_process_cpu_usage(int pid);
-static unsigned long get_process_memory_usage(int pid);
+static void get_process_memory_usage(int pid, unsigned long *rss_bytes,
+                                     unsigned long *private_bytes);
 
 /* Signal handling */
 static volatile sig_atomic_t got_sigterm = false;
@@ -273,8 +274,9 @@ typedef struct ashEntry
 	TimestampTz xact_start;
 	TimestampTz query_start;
 	TimestampTz state_change;
-        unsigned long cpu_usage;    /* Total CPU time (utime + stime + cutime + cstime) */
-        unsigned long memory_usage; /* Process memory usage in bytes */
+        unsigned long cpu_usage;      /* Cumulative CPU time (utime + stime), microseconds */
+        unsigned long memory_usage;   /* Resident set size, bytes (includes shared_buffers pages) */
+        unsigned long memory_private; /* Resident private memory, bytes (RSS - shared) */
 } ashEntry;
 
 /* pg_stat_statement_history entry */
@@ -827,7 +829,8 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 
         /* Get CPU and memory usage add by robin 20250522 */
         AshEntryArray[inserted].cpu_usage = get_process_cpu_usage(pid);
-        AshEntryArray[inserted].memory_usage = get_process_memory_usage(pid);
+        get_process_memory_usage(pid, &AshEntryArray[inserted].memory_usage,
+                                 &AshEntryArray[inserted].memory_private);
 
         memcpy(AshEntryArray[inserted].usename, usename, Min(strlen(usename)+1, NAMEDATALEN-1));
         memcpy(AshEntryArray[inserted].datname, datname, Min(strlen(datname)+1, NAMEDATALEN-1));
@@ -1729,6 +1732,11 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
                         values[j++] = Int64GetDatum(AshEntryArray[i].memory_usage);
                 else
                         nulls[j++] = true;
+                // mem_private_bytes
+                if (AshEntryArray[i].memory_private > 0)
+                        values[j++] = Int64GetDatum(AshEntryArray[i].memory_private);
+                else
+                        nulls[j++] = true;
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 }
@@ -2044,7 +2052,7 @@ static unsigned long get_process_cpu_usage(int pid)
     char line[1024];
     char *p;
     int i;
-    unsigned long utime = 0, stime = 0, cutime = 0, cstime = 0;
+    unsigned long utime = 0, stime = 0;
     unsigned long total;
     long clk_tck;
 
@@ -2081,7 +2089,23 @@ static unsigned long get_process_cpu_usage(int pid)
             return 0;
         }
 
-        /* Skip to the first field after the process name */
+        /*
+         * Skip to the first field after the process name.
+         *
+         * strrchr() only guarantees ')' is somewhere inside line[]; it may sit
+         * on the last byte before the terminator (a truncated or malformed
+         * line).  Blindly advancing two bytes would then read past the end of
+         * the buffer.  Checking p[1] first is sufficient: if it is not the
+         * terminator then line[] holds at least one more byte after it, so
+         * p += 2 stays inside the NUL-terminated string.
+         */
+        if (p[1] == '\0') {
+            ereport(DEBUG1,
+                    (errmsg("Unexpected end of stat line for pid %d", pid)));
+            fclose(fp);
+            return 0;
+        }
+
         p += 2;  /* skip ') ' */
         if (*p == '\0') {
             ereport(DEBUG1,
@@ -2108,59 +2132,76 @@ static unsigned long get_process_cpu_usage(int pid)
             }
         }
 
-        /* Read utime, stime, cutime, cstime */
+        /*
+         * Read utime and stime only.  cutime/cstime account for reaped child
+         * processes, which a PostgreSQL backend never has, so including them
+         * can only skew the value.
+         */
         utime = atol(p);
 
         p = strchr(p, ' ');
-        if (p != NULL) {
+        if (p != NULL)
             stime = atol(p + 1);
-            p = strchr(p + 1, ' ');
-            if (p != NULL) {
-                cutime = atol(p + 1);
-                p = strchr(p + 1, ' ');
-                if (p != NULL) {
-                    cstime = atol(p + 1);
-                }
-            }
-        }
 
         ereport(DEBUG1,
-                (errmsg("Raw CPU times for pid %d: utime=%lu, stime=%lu, cutime=%lu, cstime=%lu",
-                        pid, utime, stime, cutime, cstime)));
+                (errmsg("Raw CPU times for pid %d: utime=%lu, stime=%lu",
+                        pid, utime, stime)));
     }
 
     fclose(fp);
 
     /* Convert jiffies to microseconds */
-    if (utime == 0 && stime == 0 && cutime == 0 && cstime == 0) {
+    if (utime == 0 && stime == 0) {
         ereport(DEBUG1,
                 (errmsg("All CPU times are zero for pid %d", pid)));
         return 0;
     }
 
-    total = (utime + stime + cutime + cstime) * (1000000 / clk_tck);
+    total = (utime + stime) * (1000000 / clk_tck);
 
-    ereport(INFO,
+    ereport(DEBUG1,
             (errmsg("Final CPU usage for pid %d: total=%lu microseconds (CLK_TCK=%ld)",
                     pid, total, clk_tck)));
 
     return total;
 }
 
-/* Get memory usage for a process */
-static unsigned long get_process_memory_usage(int pid)
+/*
+ * Get memory usage for a process.
+ *
+ * Reports both the resident set size and the private (non-shared) part of it.
+ * A backend's RSS is dominated by the shared_buffers pages it has touched, so
+ * RSS alone says little about what the session itself consumes and cannot be
+ * summed across sessions without counting shared memory many times over.
+ * /proc/<pid>/statm carries the resident and shared page counts on the same
+ * line, so the private figure costs no extra I/O.
+ *
+ * Both outputs are set to 0 when the values cannot be determined.
+ */
+static void get_process_memory_usage(int pid, unsigned long *rss_bytes,
+                                     unsigned long *private_bytes)
 {
     FILE *fp;
     char path[256];
     char line[1024];
     char *p;
-    unsigned long vm_size = 0, rss = 0;
-    unsigned long rss_bytes = 0;
+    unsigned long vm_size = 0, rss = 0, shared = 0;
+    long pagesize;
+
+    *rss_bytes = 0;
+    *private_bytes = 0;
 
     if (pid <= 0) {
         ereport(DEBUG1,
                 (errmsg("Invalid pid: %d", pid)));
-        return 0;
+        return;
+    }
+
+    pagesize = sysconf(_SC_PAGESIZE);
+    if (pagesize <= 0) {
+        ereport(DEBUG1,
+                (errmsg("Failed to get _SC_PAGESIZE, using default value 4096")));
+        pagesize = 4096;
     }
 
     snprintf(path, sizeof(path), "/proc/%d/statm", pid);
@@ -2169,11 +2210,11 @@ static unsigned long get_process_memory_usage(int pid)
         ereport(DEBUG1,
                 (errcode_for_file_access(),
                  errmsg("could not open process statm file \"%s\": %m", path)));
-        return 0;
+        return;
     }
 
     if (fgets(line, sizeof(line), fp) != NULL) {
-        /* First field is total program size, second field is RSS */
+        /* Fields are: size resident shared text lib data dt */
         p = line;
 
         /* Skip leading whitespace */
@@ -2182,18 +2223,18 @@ static unsigned long get_process_memory_usage(int pid)
             ereport(DEBUG1,
                     (errmsg("Empty statm line for pid %d", pid)));
             fclose(fp);
-            return 0;
+            return;
         }
 
         vm_size = atol(p);
 
-        /* Find start of second field */
+        /* Find start of second field (resident) */
         p = strchr(p, ' ');
         if (p == NULL) {
             ereport(DEBUG1,
                     (errmsg("Failed to find RSS field in statm line for pid %d", pid)));
             fclose(fp);
-            return 0;
+            return;
         }
 
         /* Skip whitespace */
@@ -2203,25 +2244,47 @@ static unsigned long get_process_memory_usage(int pid)
             ereport(DEBUG1,
                     (errmsg("Unexpected end of statm line for pid %d", pid)));
             fclose(fp);
-            return 0;
+            return;
         }
 
         rss = atol(p);
 
+        /* Find start of third field (shared) */
+        p = strchr(p, ' ');
+        if (p != NULL) {
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p != '\0')
+                shared = atol(p);
+        }
+
         ereport(DEBUG1,
-                (errmsg("Memory usage for pid %d: vm_size=%lu pages, rss=%lu pages",
-                        pid, vm_size, rss)));
+                (errmsg("Memory usage for pid %d: vm_size=%lu pages, rss=%lu pages, shared=%lu pages",
+                        pid, vm_size, rss, shared)));
     }
 
     fclose(fp);
 
-    /* Convert RSS pages to bytes */
-    rss_bytes = rss * sysconf(_SC_PAGESIZE);
+    /*
+     * Reject page counts that would overflow when scaled to bytes.  A garbled
+     * or truncated statm line would otherwise wrap around and store a value
+     * that looks like a real measurement.
+     */
+    if (rss > ULONG_MAX / (unsigned long) pagesize) {
+        ereport(DEBUG1,
+                (errmsg("Implausible RSS page count %lu for pid %d, discarding",
+                        rss, pid)));
+        return;
+    }
 
-    ereport(INFO,
-            (errmsg("Physical memory (RSS) usage for pid %d: %lu bytes (%.2f MB)",
-                    pid, rss_bytes, rss_bytes / (1024.0 * 1024.0))));
+    /* shared can exceed resident only on a torn read; clamp instead of wrapping */
+    if (shared > rss)
+        shared = rss;
 
-    return rss_bytes;
+    *rss_bytes = rss * (unsigned long) pagesize;
+    *private_bytes = (rss - shared) * (unsigned long) pagesize;
+
+    ereport(DEBUG1,
+            (errmsg("Physical memory for pid %d: rss=%lu bytes, private=%lu bytes",
+                    pid, *rss_bytes, *private_bytes)));
 }
-

@@ -12,7 +12,7 @@
  * and the SQL declaration cannot drift apart.
  *
  * NOTE: pgsentinel.so must be replaced with the matching 1.4.2e1 build in the
- * same maintenance window.  A 30-column .so against a 28-column declaration
+ * same maintenance window.  A 31-column .so against a 30-column declaration
  * (or a bigint column fed by a float8 build) silently yields garbage values.
  */
 
@@ -48,8 +48,9 @@ CREATE FUNCTION pg_active_session_history(
     OUT blockers integer,
     OUT blockerpid integer,
     OUT blocker_state text,
-    OUT cpu_usage bigint,      -- cumulative CPU time since backend start, microseconds
-    OUT memory_usage bigint    -- resident set size, bytes
+    OUT cpu_usage bigint,         -- cumulative CPU time since backend start, microseconds
+    OUT memory_usage bigint,      -- resident set size, bytes (includes shared_buffers pages)
+    OUT mem_private_bytes bigint  -- resident private memory, bytes (RSS - shared)
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'pg_active_session_history'
