@@ -39,6 +39,9 @@
 #include "access/hash.h"
 #include "commands/extension.h"
 #include "catalog/namespace.h"
+#include <stdio.h>  // add by robin 20250522
+#include <unistd.h> // add by robin 20250522
+#include <string.h> // add by robin 20250522
 #include "catalog/pg_authid.h"
 #include "utils/acl.h"
 
@@ -55,7 +58,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        28
+#define PG_ACTIVE_SESSION_HISTORY_COLS        31  // add by robin 20250522
 #define PG_STAT_STATEMENTS_HISTORY_COLS       24
 #define EXTENSION_NAME "pgsentinel"
 
@@ -63,6 +66,11 @@ PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 void _PG_init(void);
 void _PG_fini(void);
 PGDLLEXPORT void pgsentinel_main(Datum);
+
+/* Function declarations  add by robin 20250522 */
+static unsigned long get_process_cpu_usage(int pid);
+static void get_process_memory_usage(int pid, unsigned long *rss_bytes,
+                                     unsigned long *private_bytes);
 
 /* Signal handling */
 static volatile sig_atomic_t got_sigterm = false;
@@ -84,6 +92,7 @@ static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
+static bool search_path_resolved = false;
 static bool ash_track_idle_trans = false;
 static int ash_restart_wait_time = 2;
 static char *pgsentinelDbName = "postgres";
@@ -196,6 +205,22 @@ static const char * const pgsa_query_track_idle=
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #endif
 
+/*
+ * The worker connects as the bootstrap superuser, whose search_path is the
+ * default "$user", public.  get_parsedinfo() and pg_active_session_history
+ * live in the extension's schema, so the sampling queries only resolve when
+ * that schema happens to sit on the default path -- which is the case only
+ * when the extension was installed into public or into a schema named after
+ * the bootstrap superuser.  Resolve the extension's own schema from the
+ * catalog and prepend it, so the worker keeps sampling no matter what the
+ * superuser is called or where the extension was installed.
+ */
+static const char * const set_search_path_query=
+"select set_config('search_path', \
+ quote_ident(n.nspname) || ', ' || current_setting('search_path'), false) \
+ from pg_extension e join pg_namespace n on n.oid = e.extnamespace \
+ where e.extname = '" EXTENSION_NAME "'";
+
 static const char * const pg_stat_statements_query=
 #if PG_VERSION_NUM < 130000
 "select userid, dbid, queryid, calls, total_time, rows, shared_blks_hit, \
@@ -266,6 +291,9 @@ typedef struct ashEntry
 	TimestampTz xact_start;
 	TimestampTz query_start;
 	TimestampTz state_change;
+        unsigned long cpu_usage;      /* Cumulative CPU time (utime + stime), microseconds */
+        unsigned long memory_usage;   /* Resident set size, bytes (includes shared_buffers pages) */
+        unsigned long memory_private; /* Resident private memory, bytes (RSS - shared) */
 } ashEntry;
 
 /* pg_stat_statement_history entry */
@@ -815,32 +843,31 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 {
 	int inserted;
 	inserted=IntEntryArray[0].inserted-1;
-	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,
-																NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,
-																NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].application_name,application_name,
-								Min(strlen(application_name)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].wait_event_type,wait_event_type,
-								Min(strlen(wait_event_type)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].wait_event,wait_event,
-								Min(strlen(wait_event)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].state,state,Min(strlen(state)+1,
-																NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].blocker_state,blocker_state,
-								Min(strlen(blocker_state)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].client_hostname,client_hostname,
-								Min(strlen(client_hostname)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].top_level_query,query,
-					Min((int) strlen(query)+1,pgstat_track_activity_query_size-1));
-	memcpy(AshEntryArray[inserted].backend_type,backend_type,
-									Min(strlen(backend_type)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].client_addr,client_addr,
-									Min(strlen(client_addr)+1,NAMEDATALEN-1));
-	memcpy(AshEntryArray[inserted].query,gpi_query,Min((int) strlen(gpi_query)+1,
-										pgstat_track_activity_query_size-1));
-	memcpy(AshEntryArray[inserted].cmdtype,cmdtype,Min((int) strlen(cmdtype)+1,
-																NAMEDATALEN-1));
+
+        /* Get CPU and memory usage add by robin 20250522 */
+        AshEntryArray[inserted].cpu_usage = get_process_cpu_usage(pid);
+        get_process_memory_usage(pid, &AshEntryArray[inserted].memory_usage,
+                                 &AshEntryArray[inserted].memory_private);
+
+        memcpy(AshEntryArray[inserted].usename, usename, Min(strlen(usename)+1, NAMEDATALEN-1));
+        memcpy(AshEntryArray[inserted].datname, datname, Min(strlen(datname)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].application_name, application_name, Min(strlen(application_name)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].wait_event_type, wait_event_type, Min(strlen(wait_event_type)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].wait_event, wait_event, Min(strlen(wait_event)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].state, state, Min(strlen(state)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].blocker_state, blocker_state, Min(strlen(blocker_state)+1, NAMEDATALEN-1));
+
+        memcpy(AshEntryArray[inserted].client_hostname, client_hostname, Min(strlen(client_hostname)+1, NAMEDATALEN-1));
+        memcpy(AshEntryArray[inserted].top_level_query, query, Min((int) strlen(query)+1, pgstat_track_activity_query_size-1));
+        memcpy(AshEntryArray[inserted].backend_type, backend_type, Min(strlen(backend_type)+1, NAMEDATALEN-1));
+        memcpy(AshEntryArray[inserted].client_addr, client_addr, Min(strlen(client_addr)+1, NAMEDATALEN-1));
+        memcpy(AshEntryArray[inserted].query, gpi_query, Min((int) strlen(gpi_query)+1, pgstat_track_activity_query_size-1));
+        memcpy(AshEntryArray[inserted].cmdtype, cmdtype, Min((int) strlen(cmdtype)+1, NAMEDATALEN-1));
 	AshEntryArray[inserted].client_port=client_port;
 	AshEntryArray[inserted].datid=datid;
 	AshEntryArray[inserted].usesysid=usesysid;
@@ -983,6 +1010,15 @@ letswait:
 		}
 
 		SPI_connect();
+
+		/* Make the extension's own schema reachable, once per worker session */
+		if (!search_path_resolved)
+		{
+			if (SPI_execute(set_search_path_query, false, 0) != SPI_OK_SELECT)
+				ereport(ERROR,
+						(errmsg("pgsentinel: could not resolve extension schema into search_path")));
+			search_path_resolved = true;
+		}
 
 		if (ash_track_idle_trans)
 		{
@@ -1718,6 +1754,21 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
+                // cpu_usage add by robin 20250522
+                if (AshEntryArray[i].cpu_usage > 0)
+                        values[j++] = Int64GetDatum(AshEntryArray[i].cpu_usage);
+                else
+                        nulls[j++] = true;
+                // memory_usage
+                if (AshEntryArray[i].memory_usage > 0)
+                        values[j++] = Int64GetDatum(AshEntryArray[i].memory_usage);
+                else
+                        nulls[j++] = true;
+                // mem_private_bytes
+                if (AshEntryArray[i].memory_private > 0)
+                        values[j++] = Int64GetDatum(AshEntryArray[i].memory_private);
+                else
+                        nulls[j++] = true;
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 }
@@ -2024,4 +2075,248 @@ ash_shmem_request(void)
 		RequestAddinShmemSpace(pgssh_entry_memsize());
 		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
 	}
+}
+/* Get CPU usage for a process add by robin 20250522 */
+static unsigned long get_process_cpu_usage(int pid)
+{
+    FILE *fp;
+    char path[256];
+    char line[1024];
+    char *p;
+    int i;
+    unsigned long utime = 0, stime = 0;
+    unsigned long total;
+    long clk_tck;
+
+    if (pid <= 0) {
+        ereport(DEBUG1,
+                (errmsg("Invalid pid: %d", pid)));
+        return 0;
+    }
+
+    /* Get clock ticks per second */
+    clk_tck = sysconf(_SC_CLK_TCK);
+    if (clk_tck <= 0) {
+        ereport(DEBUG1,
+                (errmsg("Failed to get _SC_CLK_TCK, using default value 100")));
+        clk_tck = 100;
+    }
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        ereport(DEBUG1,
+                (errcode_for_file_access(),
+                 errmsg("could not open process stat file \"%s\": %m", path)));
+        return 0;
+    }
+
+    if (fgets(line, sizeof(line), fp) != NULL) {
+        /* Find the last ')', which marks the end of the process name */
+        p = strrchr(line, ')');
+        if (p == NULL) {
+            ereport(DEBUG1,
+                    (errmsg("Failed to find ')' in stat line for pid %d", pid)));
+            fclose(fp);
+            return 0;
+        }
+
+        /*
+         * Skip to the first field after the process name.
+         *
+         * strrchr() only guarantees ')' is somewhere inside line[]; it may sit
+         * on the last byte before the terminator (a truncated or malformed
+         * line).  Blindly advancing two bytes would then read past the end of
+         * the buffer.  Checking p[1] first is sufficient: if it is not the
+         * terminator then line[] holds at least one more byte after it, so
+         * p += 2 stays inside the NUL-terminated string.
+         */
+        if (p[1] == '\0') {
+            ereport(DEBUG1,
+                    (errmsg("Unexpected end of stat line for pid %d", pid)));
+            fclose(fp);
+            return 0;
+        }
+
+        p += 2;  /* skip ') ' */
+        if (*p == '\0') {
+            ereport(DEBUG1,
+                    (errmsg("Unexpected end of stat line for pid %d", pid)));
+            fclose(fp);
+            return 0;
+        }
+
+        /* Skip 11 fields to reach utime */
+        for (i = 0; i < 11; i++) {
+            p = strchr(p, ' ');
+            if (p == NULL) {
+                ereport(DEBUG1,
+                        (errmsg("Failed to find field %d in stat line for pid %d", i+1, pid)));
+                fclose(fp);
+                return 0;
+            }
+            p++;  /* skip space */
+            if (*p == '\0') {
+                ereport(DEBUG1,
+                        (errmsg("Unexpected end of stat line at field %d for pid %d", i+1, pid)));
+                fclose(fp);
+                return 0;
+            }
+        }
+
+        /*
+         * Read utime and stime only.  cutime/cstime account for reaped child
+         * processes, which a PostgreSQL backend never has, so including them
+         * can only skew the value.
+         */
+        utime = atol(p);
+
+        p = strchr(p, ' ');
+        if (p != NULL)
+            stime = atol(p + 1);
+
+        ereport(DEBUG1,
+                (errmsg("Raw CPU times for pid %d: utime=%lu, stime=%lu",
+                        pid, utime, stime)));
+    }
+
+    fclose(fp);
+
+    /* Convert jiffies to microseconds */
+    if (utime == 0 && stime == 0) {
+        ereport(DEBUG1,
+                (errmsg("All CPU times are zero for pid %d", pid)));
+        return 0;
+    }
+
+    total = (utime + stime) * (1000000 / clk_tck);
+
+    ereport(DEBUG1,
+            (errmsg("Final CPU usage for pid %d: total=%lu microseconds (CLK_TCK=%ld)",
+                    pid, total, clk_tck)));
+
+    return total;
+}
+
+/*
+ * Get memory usage for a process.
+ *
+ * Reports both the resident set size and the private (non-shared) part of it.
+ * A backend's RSS is dominated by the shared_buffers pages it has touched, so
+ * RSS alone says little about what the session itself consumes and cannot be
+ * summed across sessions without counting shared memory many times over.
+ * /proc/<pid>/statm carries the resident and shared page counts on the same
+ * line, so the private figure costs no extra I/O.
+ *
+ * Both outputs are set to 0 when the values cannot be determined.
+ */
+static void get_process_memory_usage(int pid, unsigned long *rss_bytes,
+                                     unsigned long *private_bytes)
+{
+    FILE *fp;
+    char path[256];
+    char line[1024];
+    char *p;
+    unsigned long vm_size = 0, rss = 0, shared = 0;
+    long pagesize;
+
+    *rss_bytes = 0;
+    *private_bytes = 0;
+
+    if (pid <= 0) {
+        ereport(DEBUG1,
+                (errmsg("Invalid pid: %d", pid)));
+        return;
+    }
+
+    pagesize = sysconf(_SC_PAGESIZE);
+    if (pagesize <= 0) {
+        ereport(DEBUG1,
+                (errmsg("Failed to get _SC_PAGESIZE, using default value 4096")));
+        pagesize = 4096;
+    }
+
+    snprintf(path, sizeof(path), "/proc/%d/statm", pid);
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        ereport(DEBUG1,
+                (errcode_for_file_access(),
+                 errmsg("could not open process statm file \"%s\": %m", path)));
+        return;
+    }
+
+    if (fgets(line, sizeof(line), fp) != NULL) {
+        /* Fields are: size resident shared text lib data dt */
+        p = line;
+
+        /* Skip leading whitespace */
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') {
+            ereport(DEBUG1,
+                    (errmsg("Empty statm line for pid %d", pid)));
+            fclose(fp);
+            return;
+        }
+
+        vm_size = atol(p);
+
+        /* Find start of second field (resident) */
+        p = strchr(p, ' ');
+        if (p == NULL) {
+            ereport(DEBUG1,
+                    (errmsg("Failed to find RSS field in statm line for pid %d", pid)));
+            fclose(fp);
+            return;
+        }
+
+        /* Skip whitespace */
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') {
+            ereport(DEBUG1,
+                    (errmsg("Unexpected end of statm line for pid %d", pid)));
+            fclose(fp);
+            return;
+        }
+
+        rss = atol(p);
+
+        /* Find start of third field (shared) */
+        p = strchr(p, ' ');
+        if (p != NULL) {
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p != '\0')
+                shared = atol(p);
+        }
+
+        ereport(DEBUG1,
+                (errmsg("Memory usage for pid %d: vm_size=%lu pages, rss=%lu pages, shared=%lu pages",
+                        pid, vm_size, rss, shared)));
+    }
+
+    fclose(fp);
+
+    /*
+     * Reject page counts that would overflow when scaled to bytes.  A garbled
+     * or truncated statm line would otherwise wrap around and store a value
+     * that looks like a real measurement.
+     */
+    if (rss > ULONG_MAX / (unsigned long) pagesize) {
+        ereport(DEBUG1,
+                (errmsg("Implausible RSS page count %lu for pid %d, discarding",
+                        rss, pid)));
+        return;
+    }
+
+    /* shared can exceed resident only on a torn read; clamp instead of wrapping */
+    if (shared > rss)
+        shared = rss;
+
+    *rss_bytes = rss * (unsigned long) pagesize;
+    *private_bytes = (rss - shared) * (unsigned long) pagesize;
+
+    ereport(DEBUG1,
+            (errmsg("Physical memory for pid %d: rss=%lu bytes, private=%lu bytes",
+                    pid, *rss_bytes, *private_bytes)));
 }
