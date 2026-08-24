@@ -92,6 +92,7 @@ static int ash_sampling_period = 1;
 static int ash_max_entries = 1000;
 static int pgssh_max_entries = 10000;
 static bool pgssh_enable = false;
+static bool search_path_resolved = false;
 static bool ash_track_idle_trans = false;
 static int ash_restart_wait_time = 2;
 static char *pgsentinelDbName = "postgres";
@@ -203,6 +204,22 @@ static const char * const pgsa_query_track_idle=
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #endif
+
+/*
+ * The worker connects as the bootstrap superuser, whose search_path is the
+ * default "$user", public.  get_parsedinfo() and pg_active_session_history
+ * live in the extension's schema, so the sampling queries only resolve when
+ * that schema happens to sit on the default path -- which is the case only
+ * when the extension was installed into public or into a schema named after
+ * the bootstrap superuser.  Resolve the extension's own schema from the
+ * catalog and prepend it, so the worker keeps sampling no matter what the
+ * superuser is called or where the extension was installed.
+ */
+static const char * const set_search_path_query=
+"select set_config('search_path', \
+ quote_ident(n.nspname) || ', ' || current_setting('search_path'), false) \
+ from pg_extension e join pg_namespace n on n.oid = e.extnamespace \
+ where e.extname = '" EXTENSION_NAME "'";
 
 static const char * const pg_stat_statements_query=
 #if PG_VERSION_NUM < 130000
@@ -991,6 +1008,15 @@ letswait:
 		}
 
 		SPI_connect();
+
+		/* Make the extension's own schema reachable, once per worker session */
+		if (!search_path_resolved)
+		{
+			if (SPI_execute(set_search_path_query, false, 0) != SPI_OK_SELECT)
+				ereport(ERROR,
+						(errmsg("pgsentinel: could not resolve extension schema into search_path")));
+			search_path_resolved = true;
+		}
 
 		if (ash_track_idle_trans)
 		{
