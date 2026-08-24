@@ -35,9 +35,7 @@ jobs:
       - name: Configure shared_preload_libraries and restart
         run: |
           config_file=$(psql --no-psqlrc -U postgres -Atqc 'SHOW config_file')
-          echo "shared_preload_libraries = 'pg_stat_statements,pgsentinel'" >> "$config_file"
-          echo "pgsentinel.db_name = 'contrib_regression'" >> "$config_file"
-          echo "pgsentinel_pgssh.enable = true" >> "$config_file"
+          cat src/pgsentinel.conf >> "$config_file"
           pg_ctlcluster ${{ matrix.pg }} test restart
 
       - name: Run regression tests
@@ -46,6 +44,27 @@ jobs:
         env:
           DEB_BUILD_GNU_TYPE: 1
 
-      - name: Show regression.diffs
+      - name: Show regression.diffs for enabled test
+        if: ${{ failure() }}
+        run: cat src/regression.diffs || true
+
+      - name: Reset PostgreSQL cluster
+        run: |
+          pg_dropcluster --stop ${{ matrix.pg }} test
+          pg-start ${{ matrix.pg }}
+
+      - name: Configure pgssh disabled
+        run: |
+          config_file=$(psql --no-psqlrc -U postgres -Atqc 'SHOW config_file')
+          cat src/pgsentinel-disabled.conf >> "$config_file"
+          pg_ctlcluster ${{ matrix.pg }} test restart
+
+      - name: Run pgssh disabled sanity tests
+        run: make installcheck REGRESS=pgsentinel-disabled-test
+        working-directory: src
+        env:
+          DEB_BUILD_GNU_TYPE: 1
+
+      - name: Show regression.diffs for disabled test
         if: ${{ failure() }}
         run: cat src/regression.diffs || true
