@@ -55,7 +55,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_active_session_history);
 PG_FUNCTION_INFO_V1(pg_stat_statements_history);
 
-#define PG_ACTIVE_SESSION_HISTORY_COLS        28
+#define PG_ACTIVE_SESSION_HISTORY_COLS        29
 #define PG_STAT_STATEMENTS_HISTORY_COLS       24
 #define EXTENSION_NAME "pgsentinel"
 
@@ -101,7 +101,8 @@ static const char * const pgsa_query_no_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
@@ -113,7 +114,8 @@ static const char * const pgsa_query_no_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
@@ -125,7 +127,8 @@ static const char * const pgsa_query_no_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.*, act.leader_pid \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype,act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
@@ -137,7 +140,7 @@ static const char * const pgsa_query_no_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,act.query_id, \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid,act.query_id, \
  gpi.query, gpi.cmdtype, act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
@@ -153,7 +156,8 @@ static const char * const pgsa_query_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
@@ -165,7 +169,8 @@ static const char * const pgsa_query_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.* \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
@@ -177,7 +182,8 @@ static const char * const pgsa_query_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.*, act.leader_pid \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
+ gpi.queryid,gpi.query,gpi.cmdtype,act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
@@ -189,7 +195,7 @@ static const char * const pgsa_query_track_idle=
  else act.wait_event_type end as wait_event_type,case when act.wait_event is null \
  then 'CPU' else act.wait_event end as wait_event, act.state, act.backend_xid, \
  act.backend_xmin, act.query, act.backend_type,(pg_blocking_pids(act.pid))[1], \
- cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,act.query_id, \
+ cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid,act.query_id, \
  gpi.query, gpi.cmdtype, act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
  on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
@@ -204,6 +210,9 @@ static const char * const pg_stat_statements_query=
  temp_blks_written, blk_read_time, blk_write_time from pg_stat_statements(false) \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 2) \
+ union select nested_queryid from pg_active_session_history \
+ where ash_time in (select ash_time from pg_active_session_history \
  order by ash_time desc limit 2))";
 #elif PG_VERSION_NUM < 170000
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
@@ -214,6 +223,9 @@ static const char * const pg_stat_statements_query=
  from pg_stat_statements(false) \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 2) \
+ union select nested_queryid from pg_active_session_history \
+ where ash_time in (select ash_time from pg_active_session_history \
  order by ash_time desc limit 2))";
 #else
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
@@ -224,6 +236,9 @@ static const char * const pg_stat_statements_query=
  from pg_stat_statements(false) \
  where queryid in  (select queryid from pg_active_session_history  \
  where ash_time in (select ash_time from pg_active_session_history  \
+ order by ash_time desc limit 2) \
+ union select nested_queryid from pg_active_session_history \
+ where ash_time in (select ash_time from pg_active_session_history \
  order by ash_time desc limit 2))";
 #endif
 
@@ -242,6 +257,7 @@ typedef struct ashEntry
 #endif
 	int client_port;
 	uint64 queryid;
+	uint64 nested_queryid;
 	TimestampTz ash_time;
 	Oid datid;
 	Oid usesysid;
@@ -348,6 +364,7 @@ static void ash_entry_store(TimestampTz ash_time,const int pid,
 							Oid usesysid, TransactionId backend_xid,
 							int blockers, int blockerpid,
 							const char *blocker_state, uint64 queryid,
+							uint64 nested_queryid,
 							const char *gpi_query, const char *cmdtype);
 
 /* prepare store ash */
@@ -369,7 +386,8 @@ static void ash_prepare_store(TimestampTz ash_time,const int pid,
 								const char *backend_type, Oid usesysid,
 								TransactionId backend_xid, int blockers,
 								int blockerpid, const char *blocker_state,
-								uint64 queryid, const char *gpi_query,
+								uint64 queryid, uint64 nested_queryid,
+								const char *gpi_query,
 								const char *cmdtype);
 
 /* Estimate amount of shared memory needed for ash entry */
@@ -811,7 +829,8 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 				const char *backend_type, Oid usesysid,
 				TransactionId backend_xid, int blockers, int blockerpid,
 				const char *blocker_state, uint64 queryid,
-				const char *gpi_query, const char *cmdtype)
+				uint64 nested_queryid, const char *gpi_query,
+				const char *cmdtype)
 {
 	int inserted;
 	inserted=IntEntryArray[0].inserted-1;
@@ -858,6 +877,7 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 	AshEntryArray[inserted].blockers=blockers;
 	AshEntryArray[inserted].blockerpid=blockerpid;
 	AshEntryArray[inserted].queryid=queryid;
+	AshEntryArray[inserted].nested_queryid=nested_queryid;
 }
 
 static void
@@ -876,7 +896,8 @@ ash_prepare_store(TimestampTz ash_time, const int pid,
 					const char *backend_type, Oid usesysid,
 					TransactionId backend_xid, int blockers, int blockerpid,
 					const char *blocker_state, uint64 queryid,
-					const char *gpi_query, const char *cmdtype)
+					uint64 nested_queryid, const char *gpi_query,
+					const char *cmdtype)
 {
 	/* Safety check... */
 	if (!AshEntryArray) { return; }
@@ -891,7 +912,7 @@ ash_prepare_store(TimestampTz ash_time, const int pid,
 					xact_start, query_start, state_change, wait_event_type,
 					wait_event, state, client_hostname, query, backend_type,
 					usesysid, backend_xid, blockers, blockerpid, blocker_state,
-					queryid, gpi_query, cmdtype);
+					queryid, nested_queryid, gpi_query, cmdtype);
 }
 
 void
@@ -1039,6 +1060,7 @@ letswait:
 				TimestampTz query_startvalue;
 				TimestampTz state_changevalue;
 				uint64 queryidvalue;
+				uint64 nested_queryidvalue;
 				char *gpi_queryvalue = NULL;
 				char *cmdtypevalue = NULL;
 
@@ -1125,20 +1147,24 @@ letswait:
 					blockerstatevalue = TextDatumGetCString(data);
 				}
 
-				/* queryid */
+				/* top-level queryid */
 				queryidvalue = DatumGetUInt64(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,26, &isnull));
+
+				/* nested queryid from get_parsedinfo */
+				nested_queryidvalue = DatumGetUInt64(SPI_getbinval(
 					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,25, &isnull));
 
 				/* gpi query */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
-																26, &isnull);
+																		27, &isnull);
 				if (!isnull) {
 					gpi_queryvalue = TextDatumGetCString(data);
 				}
 
 				/* cmdtype */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
-																27, &isnull);
+																		28, &isnull);
 				if (!isnull) {
 					cmdtypevalue = TextDatumGetCString(data);
 				}
@@ -1150,20 +1176,24 @@ letswait:
 					blockerstatevalue = TextDatumGetCString(data);
 				}
 
-				/* queryid */
+				/* top-level queryid */
 				queryidvalue = DatumGetUInt64(SPI_getbinval(
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,25, &isnull));
+
+				/* nested queryid from get_parsedinfo */
+				nested_queryidvalue = DatumGetUInt64(SPI_getbinval(
 					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,24, &isnull));
 
 				/* gpi query */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
-																25, &isnull);
+																		26, &isnull);
 				if (!isnull) {
 					gpi_queryvalue = TextDatumGetCString(data);
 				}
 
 				/* cmdtype */
 				data=SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,
-																26, &isnull);
+																		27, &isnull);
 				if (!isnull) {
 					cmdtypevalue = TextDatumGetCString(data);
 				}
@@ -1225,7 +1255,7 @@ letswait:
 #if PG_VERSION_NUM >= 130000
 				/* leader pid */
 				leader_pidvalue = DatumGetInt32(SPI_getbinval(
-					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,28, &isnull));
+					SPI_tuptable->vals[i],SPI_tuptable->tupdesc,29, &isnull));
 #endif
 
 				/* prepare to store the entry */
@@ -1250,7 +1280,7 @@ letswait:
 									usesysidvalue, backend_xidvalue,
 									blockersvalue, blockerpidvalue,
 									blockerstatevalue ? blockerstatevalue : "\0",
-									queryidvalue,
+									queryidvalue, nested_queryidvalue,
 									gpi_queryvalue ? gpi_queryvalue : "\0",
 									cmdtypevalue ? cmdtypevalue : "\0");
 			}
@@ -1692,6 +1722,12 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		{
 			nulls[j++] = true;
 		}
+
+		// nested_queryid - apply privilege check
+		if (show_text && AshEntryArray[i].nested_queryid)
+			values[j++] = Int64GetDatum(AshEntryArray[i].nested_queryid);
+		else
+			nulls[j++] = true;
 
 
 		// backend_type

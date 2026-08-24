@@ -1,7 +1,39 @@
 CREATE EXTENSION pg_stat_statements;
 CREATE EXTENSION pgsentinel;
+SET pg_stat_statements.track = 'all';
 select pg_sleep(3);
 select count(*) > 0 AS has_data from pg_active_session_history where queryid in (select queryid from pg_stat_statements);
+
+CREATE FUNCTION pgsentinel_nested_queryid_test() RETURNS void AS $$
+BEGIN
+  PERFORM pg_sleep(4);
+END;
+$$ LANGUAGE plpgsql;
+SELECT pgsentinel_nested_queryid_test();
+
+-- Verify ASH records a distinct nested query ID.
+SELECT CASE WHEN current_setting('server_version_num')::integer >= 160000
+       THEN count(*) > 0 ELSE true END AS has_nested_queryid
+FROM pg_active_session_history
+WHERE nested_queryid IS NOT NULL AND nested_queryid <> queryid;
+SELECT pgsentinel_nested_queryid_test();
+
+-- Verify pgssh includes both top-level and nested query IDs.
+SELECT CASE WHEN current_setting('server_version_num')::integer >= 160000
+       THEN count(DISTINCT h.queryid) = 2 ELSE true END
+       AS has_nested_pgssh_queryids
+FROM pg_stat_statements_history AS h
+WHERE h.queryid IN (
+  SELECT queryid
+  FROM pg_active_session_history
+  WHERE top_level_query LIKE 'SELECT pgsentinel_nested_queryid_test()%'
+  UNION
+  SELECT nested_queryid
+  FROM pg_active_session_history
+  WHERE top_level_query LIKE 'SELECT pgsentinel_nested_queryid_test()%'
+);
+DROP FUNCTION pgsentinel_nested_queryid_test();
+
 select pg_sleep(3);
 select count(*) > 0 AS has_pgssh_data from pg_stat_statements_history;
 select 'test2' test2, pg_sleep(3);
