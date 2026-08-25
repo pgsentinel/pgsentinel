@@ -72,6 +72,18 @@ getparsedinfo_hash32_string(const char *str, int len)
 int
 get_max_procs_count(void)
 {
+#if PG_VERSION_NUM >= 180000
+	/*
+	 * Mirror ProcGlobal->allProcCount rather than deriving it.  Summing the
+	 * individual GUCs matched MaxBackends up to PG17, where the difference was
+	 * exactly max_prepared_xacts and therefore never negative.  PG18 replaced
+	 * autovacuum_max_workers with autovacuum_worker_slots for that purpose, so
+	 * the sum falls short of allProcCount and a parsing backend can index past
+	 * the end of ProcEntryArray.  MaxBackends is already set when
+	 * shmem_request_hook runs, which is where the sizing happens on PG15+.
+	 */
+	return MaxBackends + NUM_AUXILIARY_PROCS;
+#else
 	int count = 0;
 
 	count += MaxConnections;
@@ -83,6 +95,7 @@ get_max_procs_count(void)
 	count++;
 
 	return count;
+#endif
 }
 
 void
@@ -140,36 +153,45 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleS
 		query_len = (int) strlen(querytext);
 #endif
 
+		/*
+		 * Last line of defence, whatever get_max_procs_count() returns.  A
+		 * write past the end reads a pointer out of neighbouring shared memory
+		 * and memcpy()s to it, which segfaults the process -- and PostgreSQL
+		 * then terminates every session and reinitialises the cluster.
+		 */
+		if (i < 0 || i >= get_max_procs_count())
+			return;
+
 		minlen = Min(query_len,pgstat_track_activity_query_size-1);
 		memcpy(ProcEntryArray[i].query,querytext,minlen);
 		ProcEntryArray[i].query[minlen]='\0';
 		switch (query->commandType)
 		{
 			case CMD_SELECT:
-				ProcEntryArray[i].cmdtype="SELECT";
+				strlcpy(ProcEntryArray[i].cmdtype, "SELECT", NAMEDATALEN);
 				break;
 			case CMD_INSERT:
-				ProcEntryArray[i].cmdtype="INSERT";
+				strlcpy(ProcEntryArray[i].cmdtype, "INSERT", NAMEDATALEN);
 				break;
 #if PG_VERSION_NUM >= 150000
 			case CMD_MERGE:
-				ProcEntryArray[i].cmdtype="MERGE";
+				strlcpy(ProcEntryArray[i].cmdtype, "MERGE", NAMEDATALEN);
 				break;
 #endif
 			case CMD_UPDATE:
-				ProcEntryArray[i].cmdtype="UPDATE";
+				strlcpy(ProcEntryArray[i].cmdtype, "UPDATE", NAMEDATALEN);
 				break;
 			case CMD_DELETE:
-				ProcEntryArray[i].cmdtype="DELETE";
+				strlcpy(ProcEntryArray[i].cmdtype, "DELETE", NAMEDATALEN);
 				break;
 			case CMD_UTILITY:
-				ProcEntryArray[i].cmdtype="UTILITY";
+				strlcpy(ProcEntryArray[i].cmdtype, "UTILITY", NAMEDATALEN);
 				break;
 			case CMD_UNKNOWN:
-				ProcEntryArray[i].cmdtype="UNKNOWN";
+				strlcpy(ProcEntryArray[i].cmdtype, "UNKNOWN", NAMEDATALEN);
 				break;
 			case CMD_NOTHING:
-				ProcEntryArray[i].cmdtype="NOTHING";
+				strlcpy(ProcEntryArray[i].cmdtype, "NOTHING", NAMEDATALEN);
 				break;
 		}
 		/*
@@ -214,7 +236,8 @@ get_parsedinfo(PG_FUNCTION_ARGS)
 	rsinfo->setDesc = tupdesc;
 	MemoryContextSwitchTo(oldcontext);
 
-	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	for (i = 0; i < ProcGlobal->allProcCount &&
+				i < (uint32) get_max_procs_count(); i++)
 	{
 		PGPROC  *proc = &ProcGlobal->allProcs[i];
 		if (proc != NULL && proc->pid != 0 && (proc->pid == PG_GETARG_INT32(0)
