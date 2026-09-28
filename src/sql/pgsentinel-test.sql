@@ -95,5 +95,24 @@ RESET ROLE;
 
 DROP ROLE test_unprivileged;
 
+-- Test get_parsedinfo() privileges
+CREATE ROLE test_gpi_unprivileged;
+
+-- PUBLIC can't execute it
+SELECT has_function_privilege('test_gpi_unprivileged', 'get_parsedinfo(int)', 'EXECUTE')
+       AS unprivileged_can_execute;
+SET ROLE test_gpi_unprivileged;
+SELECT count(*) FROM get_parsedinfo(-1);
+RESET ROLE;
+
+-- A role granted EXECUTE can run it
+GRANT EXECUTE ON FUNCTION get_parsedinfo(int) TO test_gpi_unprivileged;
+SET ROLE test_gpi_unprivileged;
+SELECT count(*) > 0 AS granted_can_execute FROM get_parsedinfo(-1);
+RESET ROLE;
+
+REVOKE EXECUTE ON FUNCTION get_parsedinfo(int) FROM test_gpi_unprivileged;
+DROP ROLE test_gpi_unprivileged;
+
 DROP EXTENSION pgsentinel;
 DROP EXTENSION pg_stat_statements;
