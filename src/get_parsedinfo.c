@@ -72,8 +72,21 @@ getparsedinfo_hash32_string(const char *str, int len)
 int
 get_max_procs_count(void)
 {
+#if PG_VERSION_NUM >= 150000
+	/* Same as ProcGlobal->allProcCount. MaxBackends is set before any caller. */
+	Assert(MaxBackends > 0);
+	return MaxBackends + NUM_AUXILIARY_PROCS;
+#else
 	int count = 0;
 
+	/* Same as ProcGlobal->allProcCount */
+	if (MaxBackends > 0)
+		return MaxBackends + NUM_AUXILIARY_PROCS;
+
+	/*
+	 * Before PG 15, _PG_init requests shared memory before MaxBackends is
+	 * set, so overestimate.
+	 */
 	count += MaxConnections;
 	count += autovacuum_max_workers;
 	count += max_worker_processes;
@@ -83,6 +96,7 @@ get_max_procs_count(void)
 	count++;
 
 	return count;
+#endif
 }
 
 void
@@ -101,7 +115,8 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleS
 #else
 		prev_post_parse_analyze_hook(pstate, query, jstate);
 #endif
-	if (MyProc)
+	/* Skip a process that has no ProcEntryArray slot */
+	if (MyProc && MyProc - ProcGlobal->allProcs < proc_entry_count)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
 		const char *querytext = pstate->p_sourcetext;
@@ -202,6 +217,9 @@ get_parsedinfo(PG_FUNCTION_ARGS)
 	MemoryContext   oldcontext;
 	Datum           values[4];
 	bool            nulls[4] = {0};
+	/* Don't read past ProcEntryArray */
+	uint32          nprocs = Min(ProcGlobal->allProcCount,
+								 (uint32) proc_entry_count);
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -214,7 +232,7 @@ get_parsedinfo(PG_FUNCTION_ARGS)
 	rsinfo->setDesc = tupdesc;
 	MemoryContextSwitchTo(oldcontext);
 
-	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	for (i = 0; i < nprocs; i++)
 	{
 		PGPROC  *proc = &ProcGlobal->allProcs[i];
 		if (proc != NULL && proc->pid != 0 && (proc->pid == PG_GETARG_INT32(0)

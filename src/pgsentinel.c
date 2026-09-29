@@ -246,6 +246,7 @@ static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
 
 procEntry *ProcEntryArray = NULL;
+int proc_entry_count = 0;
 post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 
 /* ash entry */
@@ -490,7 +491,14 @@ ash_shmem_startup(void)
 			MemSet(PgsshEntryArray, 0, size);
 	}
 
-	size = mul_size(sizeof(procEntry), get_max_procs_count());
+	/* ProcEntryArray is indexed like ProcGlobal->allProcs */
+	proc_entry_count = get_max_procs_count();
+	if ((uint32) proc_entry_count != ProcGlobal->allProcCount)
+		elog(WARNING, "pgsentinel: ProcEntryArray has %d entries but ProcGlobal->allProcCount is %u",
+			 proc_entry_count, ProcGlobal->allProcCount);
+	Assert((uint32) proc_entry_count == ProcGlobal->allProcCount);
+
+	size = mul_size(sizeof(procEntry), proc_entry_count);
 	ProcEntryArray = (procEntry *) ShmemInitStruct("Get_parsedinfo Proc Entry",
 																size, &found);
 
@@ -499,7 +507,7 @@ ash_shmem_startup(void)
 		MemSet(ProcEntryArray, 0, size);
 	}
 
-	size = mul_size(pgstat_track_activity_query_size, get_max_procs_count());
+	size = mul_size(pgstat_track_activity_query_size, proc_entry_count);
 	ProcQueryBuffer = (char *) ShmemInitStruct("Proc Query Buffer", size,
 																	&found);
 
@@ -509,14 +517,14 @@ ash_shmem_startup(void)
 
 		/* Initialize pointers. */
 		buffer = ProcQueryBuffer;
-		for (i = 0; i < get_max_procs_count(); i++)
+		for (i = 0; i < proc_entry_count; i++)
 		{
 			ProcEntryArray[i].query= buffer;
 			buffer += pgstat_track_activity_query_size;
 		}
 	}
 
-	size = mul_size(NAMEDATALEN, get_max_procs_count());
+	size = mul_size(NAMEDATALEN, proc_entry_count);
 	ProcCmdTypeBuffer = (char *) ShmemInitStruct("Proc CmdType Buffer", size,
 																		&found);
 
@@ -526,7 +534,7 @@ ash_shmem_startup(void)
 
 		/* Initialize pointers. */
 		buffer = ProcCmdTypeBuffer;
-		for (i = 0; i < get_max_procs_count(); i++)
+		for (i = 0; i < proc_entry_count; i++)
 		{
 			ProcEntryArray[i].cmdtype= buffer;
 			buffer += NAMEDATALEN;
