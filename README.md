@@ -171,6 +171,7 @@ Remark
 -------------------------
 
 * Some fields may be NULL depending on the version (for example, `leader_pid` is NULL for version <= 13.0...)
+* Since 1.5.1, `PUBLIC` can't execute `get_parsedinfo()`, which returns the raw query text of every backend. An existing install gets this only after `ALTER EXTENSION pgsentinel UPDATE`, run in each database that has the extension. A role granted `EXECUTE` sees the query text of all sessions.
 
 See how to query the view in this short video
 -------------
