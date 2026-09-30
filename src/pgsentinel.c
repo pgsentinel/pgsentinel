@@ -40,6 +40,7 @@
 #include "commands/extension.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
+#include "catalog/pg_type.h"
 #include "utils/acl.h"
 
 /* Handle privilege checking across PostgreSQL versions */
@@ -91,7 +92,10 @@ static char *pgsentinelDbName = "postgres";
 /* Worker name */
 static char *worker_name = "pgsentinel";
 
-/* pg_stat_activity query */
+/*
+ * pg_stat_activity query, a format string: %s is the quoted schema of
+ * pgsentinel.
+ */
 static const char * const pgsa_query_no_track_idle=
 #if (PG_VERSION_NUM / 100 ) == 906
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -104,7 +108,7 @@ static const char * const pgsa_query_no_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
 #elif PG_VERSION_NUM < 130000
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -117,7 +121,7 @@ static const char * const pgsa_query_no_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
 #elif PG_VERSION_NUM < 160000
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -130,7 +134,7 @@ static const char * const pgsa_query_no_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype,act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
 #else
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -143,7 +147,7 @@ static const char * const pgsa_query_no_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid,act.query_id, \
  gpi.query, gpi.cmdtype, act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state ='active' and act.pid != pg_backend_pid()";
 #endif
 
@@ -159,7 +163,7 @@ static const char * const pgsa_query_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #elif PG_VERSION_NUM < 130000
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -172,7 +176,7 @@ static const char * const pgsa_query_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #elif PG_VERSION_NUM < 160000
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -185,7 +189,7 @@ static const char * const pgsa_query_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid, \
  gpi.queryid,gpi.query,gpi.cmdtype,act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #else
 "select act.datid, act.datname, act.pid, act.usesysid, act.usename, \
@@ -198,21 +202,25 @@ static const char * const pgsa_query_track_idle=
  cardinality(pg_blocking_pids(act.pid)),blk.state,gpi.pid,gpi.queryid,act.query_id, \
  gpi.query, gpi.cmdtype, act.leader_pid \
  from pg_stat_activity act left join pg_stat_activity blk  \
- on (pg_blocking_pids(act.pid))[1] = blk.pid,get_parsedinfo(act.pid) gpi \
+ on (pg_blocking_pids(act.pid))[1] = blk.pid,%s.get_parsedinfo(act.pid) gpi \
  where act.state in ('active', 'idle in transaction') and act.pid != pg_backend_pid()";
 #endif
 
+/*
+ * pg_stat_statements query, a format string: %1$s is the quoted schema of
+ * pg_stat_statements and %2$s that of pgsentinel.
+ */
 static const char * const pg_stat_statements_query=
 #if PG_VERSION_NUM < 130000
 "select userid, dbid, queryid, calls, total_time, rows, shared_blks_hit, \
  shared_blks_read, shared_blks_dirtied, shared_blks_written, local_blks_hit, \
  local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
- temp_blks_written, blk_read_time, blk_write_time from pg_stat_statements(false) \
- where queryid in  (select queryid from pg_active_session_history  \
- where ash_time in (select ash_time from pg_active_session_history  \
+ temp_blks_written, blk_read_time, blk_write_time from %1$s.pg_stat_statements(false) \
+ where queryid in  (select queryid from %2$s.pg_active_session_history  \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history  \
  order by ash_time desc limit 2) \
- union select nested_queryid from pg_active_session_history \
- where ash_time in (select ash_time from pg_active_session_history \
+ union select nested_queryid from %2$s.pg_active_session_history \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history \
  order by ash_time desc limit 2))";
 #elif PG_VERSION_NUM < 170000
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
@@ -220,12 +228,12 @@ static const char * const pg_stat_statements_query=
  local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
  temp_blks_written, blk_read_time, blk_write_time, \
  plans, total_plan_time, wal_records, wal_fpi, wal_bytes \
- from pg_stat_statements(false) \
- where queryid in  (select queryid from pg_active_session_history  \
- where ash_time in (select ash_time from pg_active_session_history  \
+ from %1$s.pg_stat_statements(false) \
+ where queryid in  (select queryid from %2$s.pg_active_session_history  \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history  \
  order by ash_time desc limit 2) \
- union select nested_queryid from pg_active_session_history \
- where ash_time in (select ash_time from pg_active_session_history \
+ union select nested_queryid from %2$s.pg_active_session_history \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history \
  order by ash_time desc limit 2))";
 #else
 "select userid, dbid, queryid, calls, total_exec_time, rows, shared_blks_hit, \
@@ -233,14 +241,19 @@ static const char * const pg_stat_statements_query=
  local_blks_read, local_blks_dirtied, local_blks_written, temp_blks_read, \
  temp_blks_written, shared_blk_read_time, shared_blk_write_time, \
  plans, total_plan_time, wal_records, wal_fpi, wal_bytes \
- from pg_stat_statements(false) \
- where queryid in  (select queryid from pg_active_session_history  \
- where ash_time in (select ash_time from pg_active_session_history  \
+ from %1$s.pg_stat_statements(false) \
+ where queryid in  (select queryid from %2$s.pg_active_session_history  \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history  \
  order by ash_time desc limit 2) \
- union select nested_queryid from pg_active_session_history \
- where ash_time in (select ash_time from pg_active_session_history \
+ union select nested_queryid from %2$s.pg_active_session_history \
+ where ash_time in (select ash_time from %2$s.pg_active_session_history \
  order by ash_time desc limit 2))";
 #endif
+
+/* quoted schema of the extension named $1 */
+static const char * const extension_schema_query=
+"select quote_ident(n.nspname) from pg_extension e \
+ join pg_namespace n on n.oid = e.extnamespace where e.extname = $1";
 
 static void pg_active_session_history_internal(FunctionCallInfo fcinfo);
 static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
@@ -347,6 +360,9 @@ static Size ash_entry_memsize(void);
 
 /* check extension is loaded/present */
 static bool PgSentinelHasBeenLoaded(void);
+
+/* quoted schema name of an extension */
+static char *quoted_extension_schema(const char *extname, MemoryContext mcxt);
 
 /* store ash entry */
 static void ash_entry_store(TimestampTz ash_time,const int pid,
@@ -943,6 +959,13 @@ pgsentinel_main(Datum main_arg)
 	BackgroundWorkerInitializeConnection(pgsentinelDbName, NULL, 0);
 #endif
 
+	/*
+	 * The queries run as superuser, so don't let search_path pick the
+	 * objects they use: search pg_catalog only, and schema-qualify our own
+	 * objects and those of pg_stat_statements.
+	 */
+	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
+
 	pgsentinel_loop_context = AllocSetContextCreate(TopMemoryContext,
 													"pgsentinel loop context",
 													ALLOCSET_DEFAULT_SIZES);
@@ -956,6 +979,9 @@ pgsentinel_main(Datum main_arg)
 		bool gotactives;
 		bool collect_pgssh;
 		TimestampTz ash_time;
+		const char *ash_schema;
+		const char *pgss_schema;
+		char *query;
 		gotactives=false; 
 
 letswait:
@@ -996,29 +1022,38 @@ letswait:
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 
-		if (!PgSentinelHasBeenLoaded()) {
+		SPI_connect();
+
+		ash_schema = NULL;
+		pgss_schema = NULL;
+
+		if (PgSentinelHasBeenLoaded())
+		{
+			ash_schema = quoted_extension_schema(EXTENSION_NAME,
+												 pgsentinel_loop_context);
+			/* Look it up now, so pgssh collection is skipped without it */
+			if (pgssh_enable)
+				pgss_schema = quoted_extension_schema("pg_stat_statements",
+													  pgsentinel_loop_context);
+		}
+
+		if (ash_schema == NULL) {
+			SPI_finish();
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 			MemoryContextReset(pgsentinel_loop_context);
 			goto letswait;
 		}
 
-		SPI_connect();
-
 		if (ash_track_idle_trans)
-		{
-			pgstat_report_activity(STATE_RUNNING, pgsa_query_track_idle);
-
-			/* We can now execute queries via SPI */
-			ret = SPI_execute(pgsa_query_track_idle, true, 0);
-		}
+			query = psprintf(pgsa_query_track_idle, ash_schema);
 		else
-		{
-			pgstat_report_activity(STATE_RUNNING, pgsa_query_no_track_idle);
+			query = psprintf(pgsa_query_no_track_idle, ash_schema);
 
-			/* We can now execute queries via SPI */
-			ret = SPI_execute(pgsa_query_no_track_idle, true, 0);
-		}
+		pgstat_report_activity(STATE_RUNNING, query);
+
+		/* We can now execute queries via SPI */
+		ret = SPI_execute(query, true, 0);
 
 		if (ret != SPI_OK_SELECT)
 			elog(FATAL, "cannot select from pg_stat_activity: error code %d", ret);
@@ -1295,16 +1330,18 @@ letswait:
 		/* Remember active sessions so pg_stat_statement_history is collected once on the following idle cycle. */
 		collect_pgssh_on_idle = gotactives;
 
-		if (collect_pgssh && pgssh_enable) 
+		if (collect_pgssh && pgssh_enable && pgss_schema != NULL)
 		{
 			SetCurrentStatementStartTimestamp();
 			StartTransactionCommand();
 			SPI_connect();
 			PushActiveSnapshot(GetTransactionSnapshot());
-			pgstat_report_activity(STATE_RUNNING, pg_stat_statements_query);
+
+			query = psprintf(pg_stat_statements_query, pgss_schema, ash_schema);
+			pgstat_report_activity(STATE_RUNNING, query);
 
 			/* We can now execute queries via SPI */
-			ret = SPI_execute(pg_stat_statements_query,true, 0);
+			ret = SPI_execute(query, true, 0);
 
 			if (ret != SPI_OK_SELECT)
 				elog(FATAL, "cannot select from pg_stat_statements: error code %d", ret);
@@ -2060,4 +2097,27 @@ ash_shmem_request(void)
 		RequestAddinShmemSpace(pgssh_entry_memsize());
 		RequestNamedLWLockTranche("Pgssh Entry Array", 1);
 	}
+}
+
+/*
+ * Return the quoted name of the schema extension extname is installed in,
+ * allocated in mcxt, or NULL if it is not installed.  The caller must be
+ * connected to SPI.
+ */
+static char *
+quoted_extension_schema(const char *extname, MemoryContext mcxt)
+{
+	Oid			argtypes[1] = {TEXTOID};
+	Datum		values[1];
+
+	values[0] = CStringGetTextDatum(extname);
+	if (SPI_execute_with_args(extension_schema_query, 1, argtypes, values,
+							  NULL, true, 1) != SPI_OK_SELECT)
+		elog(FATAL, "cannot look up the schema of extension \"%s\"", extname);
+
+	if (SPI_processed == 0)
+		return NULL;
+
+	return MemoryContextStrdup(mcxt, SPI_getvalue(SPI_tuptable->vals[0],
+												  SPI_tuptable->tupdesc, 1));
 }

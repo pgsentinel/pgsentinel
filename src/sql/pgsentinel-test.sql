@@ -84,6 +84,17 @@ commit;
 
 select count(*) > 0 AS has_idle_data from pg_active_session_history where state  = 'idle in transaction';
 
+-- The worker keeps sampling when search_path doesn't include pgsentinel's schema
+SET search_path = "$user", public;  -- this session keeps its own
+ALTER SYSTEM SET search_path = 'pg_catalog';
+select pg_reload_conf();
+SELECT pg_sleep(3), 'pg_catalog only';
+SELECT count(*) > 0 AS has_data_without_public
+FROM pg_active_session_history
+WHERE top_level_query LIKE 'SELECT pg_sleep(3), ''pg_catalog only''%';
+ALTER SYSTEM RESET search_path;
+select pg_reload_conf();
+
 -- Test privilege check
 CREATE ROLE test_unprivileged LOGIN;
 
