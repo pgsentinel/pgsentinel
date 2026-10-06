@@ -108,6 +108,7 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *
 getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleState *jstate)
 #endif
 {
+	int i = MyProc ? MyProc - ProcGlobal->allProcs : -1;
 
 	if (prev_post_parse_analyze_hook)
 #if PG_VERSION_NUM < 140000
@@ -116,9 +117,8 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleS
 		prev_post_parse_analyze_hook(pstate, query, jstate);
 #endif
 	/* Skip a process that has no ProcEntryArray slot */
-	if (MyProc && MyProc - ProcGlobal->allProcs < proc_entry_count)
+	if (i >= 0 && i < proc_entry_count)
 	{
-		int i = MyProc - ProcGlobal->allProcs;
 		const char *querytext = pstate->p_sourcetext;
 		int minlen;
 		int query_len;

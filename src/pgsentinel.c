@@ -493,6 +493,11 @@ ash_shmem_startup(void)
 
 	/* ProcEntryArray is indexed like ProcGlobal->allProcs */
 	proc_entry_count = get_max_procs_count();
+
+	/*
+	 * This should always hold. In production warn and carry on, but fail
+	 * hard in assert builds so the mismatch is caught in development.
+	 */
 	if ((uint32) proc_entry_count != ProcGlobal->allProcCount)
 		elog(WARNING, "pgsentinel: ProcEntryArray has %d entries but ProcGlobal->allProcCount is %u",
 			 proc_entry_count, ProcGlobal->allProcCount);
