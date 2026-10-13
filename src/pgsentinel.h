@@ -3,6 +3,7 @@
 
 #include <postgres.h>
 #include "parser/analyze.h"
+#include "storage/lwlock.h"
 
 /* Check PostgreSQL version */
 #if PG_VERSION_NUM < 90600
@@ -33,5 +34,11 @@ typedef struct procEntry
 
 extern procEntry *ProcEntryArray;
 extern int proc_entry_count;
+
+/*
+ * Guards ProcEntryArray. Each process writes only its own entry, so writers
+ * take it shared and readers take it exclusive.
+ */
+extern LWLock *proc_entry_lock;
 
 #endif

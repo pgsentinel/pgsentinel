@@ -155,6 +155,8 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleS
 		query_len = (int) strlen(querytext);
 #endif
 
+		/* Only this process writes entry i, so shared mode is enough */
+		LWLockAcquire(proc_entry_lock, LW_SHARED);
 		minlen = Min(query_len,pgstat_track_activity_query_size-1);
 		memcpy(ProcEntryArray[i].query,querytext,minlen);
 		ProcEntryArray[i].query[minlen]='\0';
@@ -202,6 +204,7 @@ getparsedinfo_post_parse_analyze(ParseState *pstate, Query *query, const JumbleS
 			} else {
 				ProcEntryArray[i].queryid = query->queryId;
 			}
+		LWLockRelease(proc_entry_lock);
 	}
 }
 
@@ -239,6 +242,8 @@ get_parsedinfo(PG_FUNCTION_ARGS)
 												 || PG_GETARG_INT32(0) == -1))
 		{
 			values[0] = proc->pid;
+			/* Exclusive mode waits out writers, which hold the lock shared */
+			LWLockAcquire(proc_entry_lock, LW_EXCLUSIVE);
 			if (Int64GetDatum(ProcEntryArray[i].queryid))
 				values[1] = Int64GetDatum(ProcEntryArray[i].queryid);
 			else
@@ -251,6 +256,7 @@ get_parsedinfo(PG_FUNCTION_ARGS)
         			values[3] = CStringGetTextDatum(ProcEntryArray[i].cmdtype);
 			else
 				nulls[3] = true;
+			LWLockRelease(proc_entry_lock);
     
         	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
