@@ -260,6 +260,7 @@ static void pg_stat_statements_history_internal(FunctionCallInfo fcinfo);
 
 procEntry *ProcEntryArray = NULL;
 int proc_entry_count = 0;
+LWLock *proc_entry_lock = NULL;
 post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 
 /* ash entry */
@@ -355,6 +356,8 @@ static intEntry *IntEntryArray = NULL;
 static pgsshEntry *PgsshEntryArray = NULL;
 static char *ProcQueryBuffer = NULL;
 static char *ProcCmdTypeBuffer = NULL;
+static LWLock *ash_entry_lock = NULL;
+static LWLock *pgssh_entry_lock = NULL;
 
 /* Estimate amount of shared memory needed */
 static Size ash_entry_memsize(void);
@@ -478,6 +481,12 @@ ash_shmem_startup(void)
 
 	if (ash_prev_shmem_startup_hook)
 		ash_prev_shmem_startup_hook();
+
+	ash_entry_lock = &(GetNamedLWLockTranche("Ash Entry Array"))->lock;
+	proc_entry_lock =
+		&(GetNamedLWLockTranche("Get_parsedinfo Proc Entry Array"))->lock;
+	if (pgssh_enable)
+		pgssh_entry_lock = &(GetNamedLWLockTranche("Pgssh Entry Array"))->lock;
 
 	size = mul_size(sizeof(ashEntry), ash_max_entries);
 	AshEntryArray = (ashEntry *) ShmemInitStruct("Ash Entry Array", size,
@@ -863,6 +872,7 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 {
 	int inserted;
 	inserted=IntEntryArray[0].inserted-1;
+	LWLockAcquire(ash_entry_lock, LW_EXCLUSIVE);
 	memcpy(AshEntryArray[inserted].usename,usename,Min(strlen(usename)+1,
 																NAMEDATALEN-1));
 	memcpy(AshEntryArray[inserted].datname,datname,Min(strlen(datname)+1,
@@ -907,6 +917,7 @@ ash_entry_store(TimestampTz ash_time, const int pid,
 	AshEntryArray[inserted].blockerpid=blockerpid;
 	AshEntryArray[inserted].queryid=queryid;
 	AshEntryArray[inserted].nested_queryid=nested_queryid;
+	LWLockRelease(ash_entry_lock);
 }
 
 static void
@@ -1366,6 +1377,7 @@ letswait:
 				{
 					bool isnull;
 					IntEntryArray[0].pgsshinserted=(IntEntryArray[0].pgsshinserted % pgssh_max_entries) + 1;
+					LWLockAcquire(pgssh_entry_lock, LW_EXCLUSIVE);
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].ash_time=ash_time;
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].userid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,1, &isnull));
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].dbid=DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,2, &isnull));
@@ -1392,6 +1404,7 @@ letswait:
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_fpi=DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,22, &isnull));
 					PgsshEntryArray[IntEntryArray[0].pgsshinserted-1].wal_bytes=DatumGetUInt64(SPI_getbinval(SPI_tuptable->vals[i],SPI_tuptable->tupdesc,23, &isnull));
 #endif
+					LWLockRelease(pgssh_entry_lock);
 				}
 			}
 			SPI_finish();
@@ -1602,11 +1615,16 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
+		LWLockAcquire(ash_entry_lock, LW_SHARED);
+
 		// ash_time
 		if (TimestampTzGetDatum(AshEntryArray[i].ash_time))
 			values[j++] = TimestampTzGetDatum(AshEntryArray[i].ash_time);
 		else
+		{
+			LWLockRelease(ash_entry_lock);
 			break;
+		}
 
 		// datid
 		if (ObjectIdGetDatum(AshEntryArray[i].datid))
@@ -1804,6 +1822,8 @@ pg_active_session_history_internal(FunctionCallInfo fcinfo)
 		else
 			nulls[j++] = true;
 
+		LWLockRelease(ash_entry_lock);
+
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 }
@@ -1871,11 +1891,16 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
+		LWLockAcquire(pgssh_entry_lock, LW_SHARED);
+
 		// ash_time
 		if (TimestampTzGetDatum(PgsshEntryArray[i].ash_time))
 			values[j++] = TimestampTzGetDatum(PgsshEntryArray[i].ash_time);
 		else
+		{
+			LWLockRelease(pgssh_entry_lock);
 			break;
+		}
 
 		// userid
 		if (ObjectIdGetDatum(PgsshEntryArray[i].userid))
@@ -2034,6 +2059,7 @@ pg_stat_statements_history_internal(FunctionCallInfo fcinfo)
 		nulls[j++] = true;
 		nulls[j++] = true;
 #endif
+		LWLockRelease(pgssh_entry_lock);
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
         }
 }
