@@ -4,7 +4,7 @@ else
     REGRESS_OPTS =--temp-config=./pgsentinel.conf --temp-instance=./tmp_check
 endif
 
-REGRESS = pgsentinel-test
+REGRESS = pgsentinel-upgrade-test pgsentinel-test
 
 MODULE_big = pgsentinel
 OBJS = $(patsubst %.c,%.o,$(wildcard ./*.c))
